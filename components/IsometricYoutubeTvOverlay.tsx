@@ -1,0 +1,500 @@
+'use client';
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  Volume2,
+  VolumeX,
+  Tv,
+  RotateCcw,
+  RotateCw,
+  Play,
+  Pause,
+  Minus,
+  Plus,
+} from 'lucide-react';
+import {
+  RoomObject,
+  normalizeYouTubeEmbedUrl,
+  clampObjectScale,
+  normalizeRotationAngle,
+  rotationToAngle,
+} from '@/lib/room-engine';
+import {
+  TV_SCREEN_WIDTH_PX,
+  TV_SCREEN_HEIGHT_PX,
+  TV_SCREEN_CENTER_OFFSET_Y,
+  getTvWallScreenAnchor,
+} from '@/lib/isometric-painter';
+
+export interface TvControlEventDetail {
+  tvId?: string;
+  action: 'seek' | 'volume' | 'toggleMute' | 'togglePlay';
+  deltaSeconds?: number;
+  volume?: number;
+}
+
+export function dispatchTvControlEvent(detail: TvControlEventDetail) {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent('habbo-tv-control', { detail }));
+  }
+}
+
+function formatSeconds(sec: number): string {
+  const safe = Math.max(0, Math.floor(sec));
+  const mins = Math.floor(safe / 60);
+  const rem = safe % 60;
+  return `${mins}:${rem < 10 ? '0' : ''}${rem}`;
+}
+
+interface IsometricYoutubeTvOverlayProps {
+  objects: RoomObject[];
+  originX: number;
+  originY: number;
+  scale: number;
+  onSelectTv?: (tvObj: RoomObject) => void;
+}
+
+export default function IsometricYoutubeTvOverlay({
+  objects,
+  originX,
+  originY,
+  scale,
+  onSelectTv,
+}: IsometricYoutubeTvOverlayProps) {
+  const [unmutedTvIds, setUnmutedTvIds] = useState<Record<string, boolean>>({});
+  const [volumes, setVolumes] = useState<Record<string, number>>({});
+  const [playingTvIds, setPlayingTvIds] = useState<Record<string, boolean>>({});
+  const [currentTimes, setCurrentTimes] = useState<Record<string, number>>({});
+  const [actionBadge, setActionBadge] = useState<Record<string, string>>({});
+
+  const iframeRefs = useRef<Record<string, HTMLIFrameElement | null>>({});
+  const currentTimeRef = useRef<Record<string, number>>({});
+  const durationRef = useRef<Record<string, number>>({});
+
+  const tvObjects = objects.filter((o) => o.type === 'youtube_tv');
+
+  const sendYouTubeCommand = useCallback(
+    (tvId: string, func: string, args: unknown[] = []) => {
+      const iframe = iframeRefs.current[tvId];
+      if (!iframe || !iframe.contentWindow) return;
+      iframe.contentWindow.postMessage(
+        JSON.stringify({
+          event: 'command',
+          func,
+          args,
+        }),
+        '*'
+      );
+    },
+    []
+  );
+
+  const registerIframeListener = useCallback((tvId: string) => {
+    const iframe = iframeRefs.current[tvId];
+    if (!iframe || !iframe.contentWindow) return;
+    iframe.contentWindow.postMessage(
+      JSON.stringify({
+        event: 'listening',
+        id: tvId,
+        channel: 'widget',
+      }),
+      '*'
+    );
+  }, []);
+
+  const flashBadge = useCallback((tvId: string, text: string) => {
+    setActionBadge((prev) => ({ ...prev, [tvId]: text }));
+  }, []);
+
+  const handleSeek = useCallback(
+    (tvId: string, deltaSeconds: number) => {
+      const cur = currentTimeRef.current[tvId] ?? 0;
+      const dur = durationRef.current[tvId] ?? 0;
+      const rawNext = Math.max(0, Math.round(cur + deltaSeconds));
+      const nextTime =
+        dur > 0 ? Math.min(Math.floor(dur), rawNext) : rawNext;
+
+      currentTimeRef.current[tvId] = nextTime;
+      setCurrentTimes((prev) => ({ ...prev, [tvId]: nextTime }));
+      sendYouTubeCommand(tvId, 'seekTo', [nextTime, true]);
+      flashBadge(
+        tvId,
+        `${deltaSeconds > 0 ? `+${deltaSeconds}s` : `${deltaSeconds}s`} · ${formatSeconds(nextTime)}`
+      );
+    },
+    [sendYouTubeCommand, flashBadge]
+  );
+
+  const handleSetVolume = useCallback(
+    (tvId: string, rawVolume: number) => {
+      const clamped = Math.max(0, Math.min(100, Math.round(rawVolume)));
+      setVolumes((prev) => ({ ...prev, [tvId]: clamped }));
+
+      if (clamped === 0) {
+        setUnmutedTvIds((prev) => ({ ...prev, [tvId]: false }));
+        sendYouTubeCommand(tvId, 'setVolume', [0]);
+        sendYouTubeCommand(tvId, 'mute', []);
+        flashBadge(tvId, 'VOL 0% (MUTED)');
+      } else {
+        setUnmutedTvIds((prev) => ({ ...prev, [tvId]: true }));
+        sendYouTubeCommand(tvId, 'unMute', []);
+        sendYouTubeCommand(tvId, 'setVolume', [clamped]);
+        flashBadge(tvId, `VOL ${clamped}%`);
+      }
+    },
+    [sendYouTubeCommand, flashBadge]
+  );
+
+  const handleToggleMute = useCallback(
+    (tvId: string) => {
+      const currentlyUnmuted = Boolean(unmutedTvIds[tvId]);
+      if (currentlyUnmuted) {
+        setUnmutedTvIds((prev) => ({ ...prev, [tvId]: false }));
+        sendYouTubeCommand(tvId, 'mute', []);
+        flashBadge(tvId, 'MUTED');
+      } else {
+        const targetVol = (volumes[tvId] ?? 80) > 0 ? (volumes[tvId] ?? 80) : 80;
+        setVolumes((prev) => ({ ...prev, [tvId]: targetVol }));
+        setUnmutedTvIds((prev) => ({ ...prev, [tvId]: true }));
+        sendYouTubeCommand(tvId, 'unMute', []);
+        sendYouTubeCommand(tvId, 'setVolume', [targetVol]);
+        flashBadge(tvId, `UNMUTED · ${targetVol}%`);
+      }
+    },
+    [unmutedTvIds, volumes, sendYouTubeCommand, flashBadge]
+  );
+
+  const handleTogglePlay = useCallback(
+    (tvId: string) => {
+      const isPlaying = playingTvIds[tvId] !== false;
+      if (isPlaying) {
+        setPlayingTvIds((prev) => ({ ...prev, [tvId]: false }));
+        sendYouTubeCommand(tvId, 'pauseVideo', []);
+        flashBadge(tvId, 'PAUSED');
+      } else {
+        setPlayingTvIds((prev) => ({ ...prev, [tvId]: true }));
+        sendYouTubeCommand(tvId, 'playVideo', []);
+        flashBadge(tvId, 'PLAYING');
+      }
+    },
+    [playingTvIds, sendYouTubeCommand, flashBadge]
+  );
+
+  // Listen for YouTube IFrame postMessage infoDelivery events + local fallback timer
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => {
+      if (typeof e.data !== 'string') return;
+      try {
+        const parsed = JSON.parse(e.data);
+        if (parsed && parsed.event === 'infoDelivery' && parsed.info) {
+          const targetId =
+            typeof parsed.id === 'string' && parsed.id
+              ? parsed.id
+              : Object.keys(iframeRefs.current)[0];
+          if (!targetId) return;
+
+          if (typeof parsed.info.currentTime === 'number') {
+            const t = Math.floor(parsed.info.currentTime);
+            currentTimeRef.current[targetId] = t;
+            setCurrentTimes((prev) =>
+              prev[targetId] === t ? prev : { ...prev, [targetId]: t }
+            );
+          }
+          if (
+            typeof parsed.info.duration === 'number' &&
+            parsed.info.duration > 0
+          ) {
+            durationRef.current[targetId] = parsed.info.duration;
+          }
+        }
+      } catch {
+        // Ignore non-JSON messages
+      }
+    };
+
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, []);
+
+  // Local 1-second playback clock progression + YouTube widget listener handshake
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      Object.keys(iframeRefs.current).forEach((tvId) => {
+        registerIframeListener(tvId);
+        if (playingTvIds[tvId] !== false) {
+          const next = (currentTimeRef.current[tvId] ?? 0) + 1;
+          currentTimeRef.current[tvId] = next;
+          setCurrentTimes((prev) => ({ ...prev, [tvId]: next }));
+        }
+      });
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [playingTvIds, registerIframeListener]);
+
+  // Listen for external TV control events (e.g. from the Inspector Panel)
+  useEffect(() => {
+    const onCustomControl = (e: Event) => {
+      const detail = (e as CustomEvent<TvControlEventDetail>).detail;
+      if (!detail) return;
+      const targetIds = detail.tvId
+        ? [detail.tvId]
+        : Object.keys(iframeRefs.current);
+
+      targetIds.forEach((id) => {
+        if (detail.action === 'seek' && typeof detail.deltaSeconds === 'number') {
+          handleSeek(id, detail.deltaSeconds);
+        } else if (
+          detail.action === 'volume' &&
+          typeof detail.volume === 'number'
+        ) {
+          handleSetVolume(id, detail.volume);
+        } else if (detail.action === 'toggleMute') {
+          handleToggleMute(id);
+        } else if (detail.action === 'togglePlay') {
+          handleTogglePlay(id);
+        }
+      });
+    };
+
+    window.addEventListener('habbo-tv-control', onCustomControl);
+    return () => window.removeEventListener('habbo-tv-control', onCustomControl);
+  }, [handleSeek, handleSetVolume, handleToggleMute, handleTogglePlay]);
+
+  if (tvObjects.length === 0) return null;
+
+  return (
+    <div
+      data-testid="isometric-youtube-tv-layer"
+      className="pointer-events-none absolute inset-0 overflow-hidden z-10"
+    >
+      {tvObjects.map((tv) => {
+        const { sx, sy } = getTvWallScreenAnchor(tv, originX, originY);
+        const tvObjScale = clampObjectScale(tv.scale);
+        const combinedScale = scale * tvObjScale;
+        const centerX = sx * scale;
+        const centerY = (sy + TV_SCREEN_CENTER_OFFSET_Y) * scale;
+        const screenW = Math.round(TV_SCREEN_WIDTH_PX * combinedScale);
+        const screenH = Math.round(TV_SCREEN_HEIGHT_PX * combinedScale);
+
+        const isRightWallAligned =
+          tv.rotation === 'se' || tv.rotation === 'nw';
+        const baseSkew = isRightWallAligned ? 26.56505 : -26.56505;
+        const cardinalDeg = rotationToAngle(tv.rotation);
+        const rawDeg = normalizeRotationAngle(tv.rotationAngle, tv.rotation);
+        const fineTilt = ((rawDeg - cardinalDeg + 540) % 360) - 180;
+        const skewDeg = baseSkew + fineTilt * 0.35;
+
+        const { videoId } = normalizeYouTubeEmbedUrl(tv.videoUrl);
+        const isUnmuted = Boolean(unmutedTvIds[tv.id]);
+        const currentVolume = isUnmuted ? (volumes[tv.id] ?? 80) : 0;
+        const isPlaying = playingTvIds[tv.id] !== false;
+        const curSec = currentTimes[tv.id] ?? 0;
+        const badgeText = actionBadge[tv.id];
+
+        // Keep embedSrc stable per videoId and control mute/volume/seek via YouTube IFrame JS API
+        const embedSrc = `https://www.youtube.com/embed/${videoId}?enablejsapi=1&autoplay=1&mute=1&playsinline=1&controls=1&rel=0&modestbranding=1`;
+
+        const iframeInternalW = Math.max(320, Math.round(screenW * 2));
+        const iframeInternalH = Math.max(180, Math.round(screenH * 2));
+
+        return (
+          <div
+            key={tv.id}
+            data-testid={`isometric-tv-unit-${tv.id}`}
+            data-video-id={videoId}
+            data-tv-width={TV_SCREEN_WIDTH_PX}
+            data-tv-height={TV_SCREEN_HEIGHT_PX}
+            data-tv-volume={currentVolume}
+            data-tv-time={curSec}
+            style={{
+              left: `${centerX}px`,
+              top: `${centerY}px`,
+            }}
+            className="pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 select-none"
+          >
+            {/* Floating Habbo Cinema Control Deck: -10s, Play/Pause, +10s, Mute, Volume Slider (0-100%) */}
+            <div
+              data-testid={`tv-controls-bar-${tv.id}`}
+              style={{
+                top: `${Math.round(-screenH * 0.5 - 38)}px`,
+              }}
+              onClick={(e) => e.stopPropagation()}
+              className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5 rounded-[4px] border-2 border-black bg-[#18181B]/95 px-2.5 py-1 text-[10px] font-bold text-white shadow-[3px_3px_0px_#000] whitespace-nowrap z-30"
+            >
+              {/* Select / Inspect TV Button */}
+              <button
+                type="button"
+                data-testid={`tv-select-badge-${tv.id}`}
+                onClick={() => onSelectTv?.(tv)}
+                title="Inspect or program 3D YouTube Cinema Screen"
+                className="inline-flex items-center gap-1 rounded-[2px] bg-amber-500/20 border border-amber-400/50 px-1.5 py-0.5 text-amber-300 hover:bg-amber-500/30 hover:text-white cursor-pointer"
+              >
+                <Tv className="h-3 w-3 text-amber-400" />
+                <span>3D TV</span>
+              </button>
+
+              <span className="text-slate-600">|</span>
+
+              {/* -10s Rewind Button */}
+              <button
+                type="button"
+                data-testid={`tv-seek-backward-${tv.id}`}
+                onClick={() => handleSeek(tv.id, -10)}
+                title="Rewind 10 seconds (-10s)"
+                aria-label="Rewind 10 seconds"
+                className="inline-flex items-center gap-0.5 rounded-[2px] border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300 hover:bg-slate-700 hover:text-white active:translate-y-[1px] cursor-pointer"
+              >
+                <RotateCcw className="h-2.5 w-2.5" />
+                <span>-10s</span>
+              </button>
+
+              {/* Play / Pause Toggle */}
+              <button
+                type="button"
+                data-testid={`tv-play-pause-${tv.id}`}
+                onClick={() => handleTogglePlay(tv.id)}
+                title={isPlaying ? 'Pause video' : 'Play video'}
+                aria-label={isPlaying ? 'Pause video' : 'Play video'}
+                className="inline-flex items-center justify-center rounded-[2px] border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-slate-200 hover:bg-slate-700 hover:text-white cursor-pointer"
+              >
+                {isPlaying ? (
+                  <Pause className="h-2.5 w-2.5 text-amber-300" />
+                ) : (
+                  <Play className="h-2.5 w-2.5 text-emerald-400" />
+                )}
+              </button>
+
+              {/* +10s Fast-Forward Button */}
+              <button
+                type="button"
+                data-testid={`tv-seek-forward-${tv.id}`}
+                onClick={() => handleSeek(tv.id, 10)}
+                title="Fast-forward 10 seconds (+10s)"
+                aria-label="Fast-forward 10 seconds"
+                className="inline-flex items-center gap-0.5 rounded-[2px] border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300 hover:bg-slate-700 hover:text-white active:translate-y-[1px] cursor-pointer"
+              >
+                <span>+10s</span>
+                <RotateCw className="h-2.5 w-2.5" />
+              </button>
+
+              {/* Elapsed Time / Seek Status Pill */}
+              <span
+                data-testid={`tv-time-readout-${tv.id}`}
+                className="rounded-[2px] bg-black/70 border border-slate-700 px-1.5 py-0.5 font-mono text-[9px] text-amber-300"
+              >
+                {badgeText || formatSeconds(curSec)}
+              </span>
+
+              <span className="text-slate-600">|</span>
+
+              {/* Mute / Unmute Toggle */}
+              <button
+                type="button"
+                data-testid={`tv-audio-toggle-${tv.id}`}
+                onClick={() => handleToggleMute(tv.id)}
+                aria-label={isUnmuted ? 'Mute 3D TV' : 'Unmute 3D TV'}
+                title={isUnmuted ? 'Mute TV audio' : 'Unmute TV audio'}
+                className="inline-flex items-center gap-0.5 rounded-[2px] border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-slate-200 hover:bg-slate-700 hover:text-emerald-300 cursor-pointer"
+              >
+                {isUnmuted && currentVolume > 0 ? (
+                  <Volume2 className="h-3 w-3 text-emerald-400" />
+                ) : (
+                  <VolumeX className="h-3 w-3 text-rose-400" />
+                )}
+              </button>
+
+              {/* Volume -10% Step Button */}
+              <button
+                type="button"
+                data-testid={`tv-volume-down-${tv.id}`}
+                onClick={() =>
+                  handleSetVolume(
+                    tv.id,
+                    (isUnmuted ? (volumes[tv.id] ?? 80) : 0) - 10
+                  )
+                }
+                title="Decrease volume (-10%)"
+                aria-label="Decrease volume"
+                className="inline-flex items-center justify-center rounded-[2px] border border-slate-600 bg-slate-800 p-0.5 text-slate-300 hover:bg-slate-700 hover:text-white cursor-pointer"
+              >
+                <Minus className="h-2.5 w-2.5" />
+              </button>
+
+              {/* Volume Slider (0% - 100%) */}
+              <input
+                type="range"
+                min={0}
+                max={100}
+                step={5}
+                data-testid={`tv-volume-slider-${tv.id}`}
+                aria-label="3D TV Volume"
+                value={currentVolume}
+                onChange={(e) =>
+                  handleSetVolume(tv.id, Number(e.target.value))
+                }
+                className="h-1.5 w-16 accent-amber-400 cursor-pointer"
+              />
+
+              {/* Volume +10% Step Button */}
+              <button
+                type="button"
+                data-testid={`tv-volume-up-${tv.id}`}
+                onClick={() =>
+                  handleSetVolume(
+                    tv.id,
+                    (isUnmuted ? (volumes[tv.id] ?? 80) : 0) + 10
+                  )
+                }
+                title="Increase volume (+10%)"
+                aria-label="Increase volume"
+                className="inline-flex items-center justify-center rounded-[2px] border border-slate-600 bg-slate-800 p-0.5 text-slate-300 hover:bg-slate-700 hover:text-white cursor-pointer"
+              >
+                <Plus className="h-2.5 w-2.5" />
+              </button>
+
+              {/* Volume Readout */}
+              <span
+                data-testid={`tv-volume-value-${tv.id}`}
+                className="min-w-[30px] text-right font-mono text-[9px] text-emerald-300"
+              >
+                {currentVolume}%
+              </span>
+            </div>
+
+            {/* Upgraded Giant 3D Isometric Wall Cinema Screen Matching the Yellow Rectangle (284x102) */}
+            <div
+              data-testid={`isometric-tv-screen-${tv.id}`}
+              onClick={() => onSelectTv?.(tv)}
+              style={{
+                width: `${screenW}px`,
+                height: `${screenH}px`,
+                transform: `skewY(${skewDeg}deg)`,
+              }}
+              className="relative overflow-hidden border-2 border-[#FACC15] bg-black shadow-[0_0_16px_rgba(250,204,21,0.35),inset_0_0_8px_rgba(0,0,0,0.95)]"
+            >
+              <iframe
+                ref={(el) => {
+                  iframeRefs.current[tv.id] = el;
+                }}
+                onLoad={() => registerIframeListener(tv.id)}
+                data-testid={`youtube-tv-iframe-${tv.id}`}
+                title={`${tv.label} (${videoId})`}
+                src={embedSrc}
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+                style={{
+                  width: `${iframeInternalW}px`,
+                  height: `${iframeInternalH}px`,
+                  transform: 'scale(0.5)',
+                  transformOrigin: 'top left',
+                }}
+                className="border-0 block bg-black"
+              />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+

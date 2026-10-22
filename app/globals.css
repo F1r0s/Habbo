@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+@font-face {
+  font-family: 'Volter';
+  src: url('/resources/fonts/Volter.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Volter';
+  src: url('/resources/fonts/Volter-Bold.ttf') format('truetype');
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+.font-volter {
+  font-family: 'Volter', var(--font-pixel), monospace;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: grayscale;
+  font-smooth: never;
+}

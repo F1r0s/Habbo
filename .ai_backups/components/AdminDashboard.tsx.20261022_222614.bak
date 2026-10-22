@@ -1,0 +1,1485 @@
+'use client';
+
+import React, { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
+import {
+  Lock,
+  Unlock,
+  RotateCw,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  Trash2,
+  Wand2,
+  RotateCcw,
+  Eraser,
+  X,
+  Pencil,
+  Tv,
+  Package,
+  Layers,
+  Plus,
+  Minus,
+  ChevronUp,
+  ChevronDown,
+} from 'lucide-react';
+import {
+  GRID_SIZE,
+  OBJECT_CATALOG,
+  DEFAULT_YOUTUBE_VIDEO_URL,
+  RoomObjectType,
+  ProjectLink,
+  GridCoord,
+  IsometricRotation,
+  DragFurniturePayload,
+  PlacementMode,
+  InventoryItem,
+  clampObjectScale,
+  normalizeRotationAngle,
+  angleToIsometricRotation,
+  rotationToAngle,
+  getNextRotation,
+  getNextStackHeightAtTile,
+  verifyAdminPasscode,
+  serializeDragFurniturePayload,
+  parseDragFurniturePayload,
+  resolveCanvasDropTile,
+  getTopObjectAtTile,
+  extractYouTubeVideoId,
+  normalizeYouTubeEmbedUrl,
+} from '@/lib/room-engine';
+import {
+  renderIsometricRoom,
+  renderBuilderPreviewBox,
+  renderFurniSlotThumbnail,
+} from '@/lib/isometric-painter';
+import { loadHabboSpriteAtlas } from '@/lib/habbo-sprites';
+import { useRoomStore, pixelAudio } from '@/lib/use-room-store';
+import IsometricYoutubeTvOverlay from './IsometricYoutubeTvOverlay';
+
+type BcCategoryFilter =
+  | 'all'
+  | 'blocks_bottles'
+  | 'seating'
+  | 'rugs'
+  | 'tables'
+  | 'plants'
+  | 'pets_crowns'
+  | 'screens';
+
+const BC_CATEGORIES: Array<{
+  id: BcCategoryFilter;
+  label: string;
+  iconColor: string;
+  types?: RoomObjectType[];
+}> = [
+  {
+    id: 'all',
+    label: 'Essentials',
+    iconColor: '#EF4444',
+  },
+  {
+    id: 'blocks_bottles',
+    label: 'Blocks & Bottles',
+    iconColor: '#F59E0B',
+    types: ['building_block', 'glass_bottle'],
+  },
+  {
+    id: 'rugs',
+    label: 'Rugs',
+    iconColor: '#84CC16',
+    types: ['luxury_rug_pink', 'luxury_rug_blue', 'luxury_rug_gold'],
+  },
+  {
+    id: 'seating',
+    label: 'Chairs & Sofas',
+    iconColor: '#F472B6',
+    types: ['white_sofa', 'wood_stool'],
+  },
+  {
+    id: 'tables',
+    label: 'Tables',
+    iconColor: '#D97706',
+    types: ['wood_table'],
+  },
+  {
+    id: 'plants',
+    label: 'Plants',
+    iconColor: '#22C55E',
+    types: ['potted_plant'],
+  },
+  {
+    id: 'pets_crowns',
+    label: 'Pets & Crowns',
+    iconColor: '#A855F7',
+    types: [
+      'pet_dragon',
+      'pet_cat_basket',
+      'water_bowl',
+      'royal_crown_gold',
+      'royal_crown_purple',
+    ],
+  },
+  {
+    id: 'screens',
+    label: 'Screens & 3D TV',
+    iconColor: '#38BDF8',
+    types: ['youtube_tv', 'neon_bulletin', 'floating_screen', 'admin_console'],
+  },
+];
+
+const HABBO_ENGLISH_NAMES: Record<RoomObjectType, string> = {
+  youtube_tv: '3D YouTube TV',
+  building_block: 'Digital Block',
+  glass_bottle: 'Pixel Elixir Bottle',
+  white_sofa: 'White Club Sofa',
+  luxury_rug_pink: 'Woven Rose Rug',
+  luxury_rug_blue: 'Sky Blue Rug',
+  luxury_rug_gold: 'Imperial Gold Rug',
+  wood_table: 'Mahogany Lounge Table',
+  wood_stool: 'Bistro Bar Stool',
+  potted_plant: 'Twisted Bamboo Plant',
+  royal_crown_gold: 'Golden Sovereign Crown',
+  royal_crown_purple: 'Amethyst Crown Bust',
+  pet_dragon: 'Draco the Dragon',
+  pet_cat_basket: 'Sleeping Cat (Basket)',
+  water_bowl: 'Water & Salmon Bowl',
+  neon_bulletin: 'Wall Project Screen',
+  floating_screen: 'Holo Project Monitor',
+  admin_console: 'Control Console',
+};
+
+// Classic 52-color Habbo Builders' Club Palette matching reference image_b38e0cb6.png
+const HABBO_BC_PALETTE: string[] = [
+  // Row 1: Whites, Cyans, Greys, Creams
+  '#FFFFFF', '#99F6E4', '#2DD4BF', '#00E5FF', '#BAE6FD', '#E2E8F0', '#94A3B8', '#FED7AA', '#FDE68A', '#FEF08A', '#FDE047',
+  // Row 2: Yellows & Greens
+  '#FACC15', '#EAB308', '#A3E635', '#84CC16', '#4ADE80', '#6EE7B7', '#34D399', '#10B981', '#22C55E', '#16A34A', '#15803D',
+  // Row 3: Deep Greens, Teals, Slates, Sky Blues
+  '#166534', '#3F6212', '#365314', '#14532D', '#115E59', '#1E3A8A', '#475569', '#64748B', '#06B6D4', '#38BDF8', '#0284C7',
+  // Row 4: Lavenders, Pinks, Corals, Oranges, Golds
+  '#C7D2FE', '#DDD6FE', '#FBCFE8', '#F9A8D4', '#FDA4AF', '#FB923C', '#EA580C', '#F97316', '#F59E0B', '#D97706', '#B45309',
+  // Row 5: Browns, Crimsons, Magentas, Purples, Blues
+  '#78350F', '#713F12', '#7C2D12', '#7F1D1D', '#991B1B', '#E11D48', '#EC4899', '#F472B6', '#A855F7', '#818CF8', '#2563EB',
+  // Row 6: Deep Indigos & Violets
+  '#1D4ED8', '#A78BFA', '#E879F9', '#D946EF', '#9333EA', '#7E22CE', '#3730A3', '#4F46E5', '#1E40AF',
+];
+
+const LOGICAL_CANVAS_W = 760;
+const LOGICAL_CANVAS_H = 500;
+const LOGICAL_ORIGIN_X = 380;
+const LOGICAL_ORIGIN_Y = 175;
+
+function FurniSlotThumbnail({
+  type,
+  colorVariant,
+  projects,
+  spritesReady,
+}: {
+  type: RoomObjectType;
+  colorVariant: string;
+  projects: ProjectLink[];
+  spritesReady: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    renderFurniSlotThumbnail({
+      ctx,
+      width: canvas.width,
+      height: canvas.height,
+      type,
+      colorVariant,
+      projects,
+    });
+  }, [type, colorVariant, projects, spritesReady]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={34}
+      height={34}
+      className="h-[30px] w-[30px] pointer-events-none block"
+      style={{ imageRendering: 'pixelated' }}
+    />
+  );
+}
+
+export default function AdminDashboard() {
+  const {
+    objects,
+    projects,
+    pets,
+    isLoaded,
+    isAdminAuthenticated,
+    addObject,
+    moveObject,
+    removeObject,
+    removePet,
+    clearAllPets,
+    restoreDefaultPets,
+    rotateObject,
+    updateObjectVideoUrl,
+    resetRoomToDefault,
+    applyOrganizedPreset,
+    clearFloorToMinimal,
+    loginAdmin,
+    logoutAdmin,
+  } = useRoomStore();
+
+  // --- Secret Owner Auth Gate State ---
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [spritesReady, setSpritesReady] = useState(false);
+
+  // --- Builders' Club Window State ---
+  const [bcCategory, setBcCategory] = useState<BcCategoryFilter>('all');
+  const [sidebarSearch, setSidebarSearch] = useState('');
+  const [activeDragPayload, setActiveDragPayload] =
+    useState<DragFurniturePayload | null>(null);
+  const [dropHoverTile, setDropHoverTile] = useState<GridCoord | null>(null);
+  const [canvasHoverTile, setCanvasHoverTile] = useState<GridCoord | null>(null);
+
+  // Placement settings
+  const [placementMode, setPlacementMode] = useState<PlacementMode>('replace');
+  const [clickToPlaceMode, setClickToPlaceMode] = useState<boolean>(true);
+  const [showGridOverlay, setShowGridOverlay] = useState<boolean>(true);
+
+  // Selected furniture item in the Builders' Club catalog
+  const [selectedType, setSelectedType] = useState<RoomObjectType>('youtube_tv');
+  const [objectLabel, setObjectLabel] = useState(
+    HABBO_ENGLISH_NAMES['youtube_tv']
+  );
+  const [coordX, setCoordX] = useState<number>(5);
+  const [coordY, setCoordY] = useState<number>(0);
+  const [coordZ, setCoordZ] = useState<number>(0);
+  const [rotation, setRotation] = useState<IsometricRotation>('se');
+  const [colorVariant, setColorVariant] = useState<string>('#EF4444');
+  const [linkedProjectId] = useState<string>('proj-pixel-engine');
+  const [tvVideoUrlInput, setTvVideoUrlInput] = useState<string>(
+    DEFAULT_YOUTUBE_VIDEO_URL
+  );
+  const [tvUrlError, setTvUrlError] = useState<string | null>(null);
+  const [selectedPlacedObjectId, setSelectedPlacedObjectId] = useState<
+    string | null
+  >(null);
+  const [statusToast, setStatusToast] = useState<string | null>(null);
+
+  // Canvas refs: 1) Main room on right, 2) 3D Builders' Club preview box on left
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const builderPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [canvasDisplayScale, setCanvasDisplayScale] = useState<number>(1);
+
+  useEffect(() => {
+    loadHabboSpriteAtlas().then(() => {
+      setSpritesReady(true);
+    });
+  }, []);
+
+  // Auto-dismiss status toast after 3.2 seconds
+  useEffect(() => {
+    if (!statusToast) return;
+    const timer = setTimeout(() => setStatusToast(null), 3200);
+    return () => clearTimeout(timer);
+  }, [statusToast]);
+
+  const handleSelectObjectType = (type: RoomObjectType) => {
+    setSelectedType(type);
+    const spec = OBJECT_CATALOG[type];
+    setObjectLabel(HABBO_ENGLISH_NAMES[type] || spec.name);
+    setColorVariant(spec.defaultColor);
+    const nextZ =
+      placementMode === 'replace' || spec.defaultWalkable
+        ? 0
+        : getNextStackHeightAtTile(coordX, coordY, objects);
+    setCoordZ(nextZ);
+  };
+
+  useEffect(() => {
+    const spec = OBJECT_CATALOG[selectedType];
+    if (placementMode === 'replace' || spec.defaultWalkable) {
+      setCoordZ(0);
+    } else {
+      setCoordZ(getNextStackHeightAtTile(coordX, coordY, objects));
+    }
+  }, [coordX, coordY, objects, selectedType, placementMode]);
+
+  // Render the miniature 3D isometric preview inside the Builders' Club dialog
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+    const canvas = builderPreviewCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    renderBuilderPreviewBox({
+      ctx,
+      width: canvas.width,
+      height: canvas.height,
+      type: selectedType,
+      rotation,
+      colorVariant,
+      projects,
+    });
+  }, [
+    isAdminAuthenticated,
+    spritesReady,
+    selectedType,
+    rotation,
+    colorVariant,
+    projects,
+  ]);
+
+  const activePreviewTile = dropHoverTile || canvasHoverTile;
+  const activeBrushType = activeDragPayload?.type || selectedType;
+  const activeBrushSpec = OBJECT_CATALOG[activeBrushType];
+  const previewZ = activePreviewTile
+    ? placementMode === 'replace' || activeBrushSpec.defaultWalkable
+      ? 0
+      : getNextStackHeightAtTile(
+          activePreviewTile.x,
+          activePreviewTile.y,
+          objects
+        )
+    : coordZ;
+
+  // Render the live interactive isometric room on the right side
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    canvas.width = LOGICAL_CANVAS_W;
+    canvas.height = LOGICAL_CANVAS_H;
+
+    const shouldShowGhost =
+      Boolean(activeDragPayload && activePreviewTile) ||
+      Boolean(clickToPlaceMode && activePreviewTile);
+
+    const ghostObject =
+      shouldShowGhost && activePreviewTile
+        ? {
+            type: activeDragPayload?.type || selectedType,
+            label: activeDragPayload?.label || objectLabel,
+            x: activePreviewTile.x,
+            y: activePreviewTile.y,
+            z: previewZ,
+            rotation: activeDragPayload?.rotation || rotation,
+            colorVariant: activeDragPayload?.colorVariant || colorVariant,
+            projectId: activeDragPayload?.projectId || linkedProjectId,
+          }
+        : null;
+
+    ctx.save();
+    renderIsometricRoom({
+      ctx,
+      width: LOGICAL_CANVAS_W,
+      height: LOGICAL_CANVAS_H,
+      originX: LOGICAL_ORIGIN_X,
+      originY: LOGICAL_ORIGIN_Y,
+      objects,
+      projects,
+      chatBubbles: [],
+      avatarPos: { x: 4, y: 5 },
+      avatarFacing: 'se',
+      isAvatarWalking: false,
+      hoveredTile: activePreviewTile,
+      selectedTile: { x: coordX, y: coordY },
+      hoveredObjectId: null,
+      selectedObjectId: selectedPlacedObjectId,
+      tick: 12,
+      showGridOverlay,
+      ghostObject,
+      hideStaticAnimals: pets.length === 0,
+    });
+    ctx.restore();
+  }, [
+    isAdminAuthenticated,
+    spritesReady,
+    objects,
+    projects,
+    pets.length,
+    coordX,
+    coordY,
+    activePreviewTile,
+    activeDragPayload,
+    clickToPlaceMode,
+    selectedType,
+    objectLabel,
+    rotation,
+    colorVariant,
+    linkedProjectId,
+    previewZ,
+    selectedPlacedObjectId,
+    showGridOverlay,
+  ]);
+
+  const handlePasscodeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!passcodeInput.trim()) {
+      setAuthError('Please enter your secret owner passcode.');
+      return;
+    }
+    if (!verifyAdminPasscode(passcodeInput)) {
+      setAuthError('Access denied. Owner only (Higma).');
+      return;
+    }
+    setAuthError(null);
+    loginAdmin();
+  };
+
+  const placeFurnitureAtTile = (
+    payload: DragFurniturePayload,
+    targetX: number,
+    targetY: number
+  ) => {
+    const spec = OBJECT_CATALOG[payload.type];
+    const normalizedTvUrl =
+      payload.type === 'youtube_tv'
+        ? normalizeYouTubeEmbedUrl(payload.videoUrl || tvVideoUrlInput).watchUrl
+        : undefined;
+    const created = addObject(
+      {
+        type: payload.type,
+        label: payload.label,
+        x: targetX,
+        y: targetY,
+        z:
+          placementMode === 'replace' || spec.defaultWalkable
+            ? 0
+            : getNextStackHeightAtTile(targetX, targetY, objects),
+        rotation: payload.rotation,
+        colorVariant: payload.colorVariant,
+        projectId:
+          payload.type === 'neon_bulletin' || payload.type === 'floating_screen'
+            ? payload.projectId || linkedProjectId
+            : undefined,
+        videoUrl: normalizedTvUrl,
+      },
+      placementMode
+    );
+
+    setCoordX(targetX);
+    setCoordY(targetY);
+    setCoordZ(created.z);
+    setSelectedPlacedObjectId(created.id);
+    setStatusToast(
+      `Placed ${HABBO_ENGLISH_NAMES[created.type] || created.label} at (${created.x}, ${created.y})`
+    );
+  };
+
+  const handleSidebarDragStart = (
+    e: React.DragEvent<HTMLButtonElement>,
+    type: RoomObjectType
+  ) => {
+    const spec = OBJECT_CATALOG[type];
+    const isCurrentSelected = selectedType === type;
+    const payload: DragFurniturePayload = {
+      type,
+      label: HABBO_ENGLISH_NAMES[type] || spec.name,
+      colorVariant: isCurrentSelected ? colorVariant : spec.defaultColor,
+      rotation,
+      projectId:
+        type === 'neon_bulletin' || type === 'floating_screen'
+          ? linkedProjectId
+          : undefined,
+      videoUrl: type === 'youtube_tv' ? tvVideoUrlInput : undefined,
+    };
+
+    handleSelectObjectType(type);
+    setActiveDragPayload(payload);
+
+    const serialized = serializeDragFurniturePayload(payload);
+    e.dataTransfer.setData('application/x-habbo-furniture', serialized);
+    e.dataTransfer.setData('text/plain', serialized);
+    e.dataTransfer.effectAllowed = 'copy';
+  };
+
+  const handleSidebarDragEnd = () => {
+    setActiveDragPayload(null);
+    setDropHoverTile(null);
+  };
+
+  const resolveTileFromPointer = (
+    clientX: number,
+    clientY: number
+  ): GridCoord | null => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return resolveCanvasDropTile({
+      clientX,
+      clientY,
+      rectLeft: rect.left,
+      rectTop: rect.top,
+      rectWidth: rect.width,
+      rectHeight: rect.height,
+      logicalWidth: LOGICAL_CANVAS_W,
+      logicalHeight: LOGICAL_CANVAS_H,
+      originX: LOGICAL_ORIGIN_X,
+      originY: LOGICAL_ORIGIN_Y,
+    });
+  };
+
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const tile = resolveTileFromPointer(e.clientX, e.clientY);
+    setCanvasHoverTile((prev) => {
+      if (!tile && !prev) return null;
+      if (tile && prev && tile.x === prev.x && tile.y === prev.y) return prev;
+      return tile;
+    });
+  };
+
+  const handleCanvasDragOver = (e: React.DragEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    const tile = resolveTileFromPointer(e.clientX, e.clientY);
+    if (tile) {
+      setDropHoverTile((prev) =>
+        prev && prev.x === tile.x && prev.y === tile.y ? prev : tile
+      );
+    }
+  };
+
+  const handleCanvasDrop = (e: React.DragEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const tile =
+      resolveTileFromPointer(e.clientX, e.clientY) ||
+      dropHoverTile || { x: coordX, y: coordY };
+
+    const raw =
+      e.dataTransfer.getData('application/x-habbo-furniture') ||
+      e.dataTransfer.getData('text/plain');
+    const payload =
+      parseDragFurniturePayload(raw) ||
+      activeDragPayload || {
+        type: selectedType,
+        label: objectLabel,
+        colorVariant,
+        rotation,
+        projectId: linkedProjectId,
+      };
+
+    placeFurnitureAtTile(payload, tile.x, tile.y);
+    setActiveDragPayload(null);
+    setDropHoverTile(null);
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const tile = resolveTileFromPointer(e.clientX, e.clientY);
+    if (!tile) return;
+
+    setCoordX(tile.x);
+    setCoordY(tile.y);
+
+    if (clickToPlaceMode) {
+      placeFurnitureAtTile(
+        {
+          type: selectedType,
+          label: objectLabel,
+          colorVariant,
+          rotation,
+          projectId: linkedProjectId,
+        },
+        tile.x,
+        tile.y
+      );
+    } else {
+      const topObj = getTopObjectAtTile(tile.x, tile.y, objects);
+      setSelectedPlacedObjectId(topObj ? topObj.id : null);
+      pixelAudio.playConsoleClick();
+    }
+  };
+
+  const handleNudgePlacedObject = (objId: string, dx: number, dy: number) => {
+    const targetObj = objects.find((o) => o.id === objId);
+    if (!targetObj) return;
+    const nextX = Math.max(0, Math.min(GRID_SIZE - 1, targetObj.x + dx));
+    const nextY = Math.max(0, Math.min(GRID_SIZE - 1, targetObj.y + dy));
+    if (nextX === targetObj.x && nextY === targetObj.y) return;
+
+    moveObject(objId, nextX, nextY, placementMode);
+    setCoordX(nextX);
+    setCoordY(nextY);
+    setSelectedPlacedObjectId(objId);
+  };
+
+  // Filtered furniture items for the Builders' Club icon grid
+  const activeCatSpec = BC_CATEGORIES.find((c) => c.id === bcCategory);
+  const catalogEntries = Object.values(OBJECT_CATALOG).filter((spec) => {
+    if (
+      activeCatSpec?.types &&
+      !activeCatSpec.types.includes(spec.type)
+    ) {
+      return false;
+    }
+    if (sidebarSearch.trim()) {
+      const q = sidebarSearch.toLowerCase();
+      const enName = (HABBO_ENGLISH_NAMES[spec.type] || '').toLowerCase();
+      return (
+        enName.includes(q) ||
+        spec.name.toLowerCase().includes(q) ||
+        spec.type.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
+  // Currently selected placed object on the floor (for quick move/rotate/pick-up)
+  const activeFloorObj =
+    objects.find((o) => o.id === selectedPlacedObjectId) ||
+    getTopObjectAtTile(coordX, coordY, objects);
+
+  useEffect(() => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return;
+    const updateScale = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width > 0) {
+        setCanvasDisplayScale(rect.width / LOGICAL_CANVAS_W);
+      }
+    };
+    updateScale();
+    const ro = new ResizeObserver(updateScale);
+    ro.observe(canvas);
+    return () => ro.disconnect();
+  }, [isAdminAuthenticated, isLoaded]);
+
+  const handleProgramTvUrl = (e: React.FormEvent) => {
+    e.preventDefault();
+    const vidId = extractYouTubeVideoId(tvVideoUrlInput);
+    if (!vidId) {
+      setTvUrlError('Please enter a valid YouTube URL or 11-character Video ID.');
+      return;
+    }
+    setTvUrlError(null);
+    const canonical = `https://www.youtube.com/watch?v=${vidId}`;
+    setTvVideoUrlInput(canonical);
+
+    const existingTvs = objects.filter((o) => o.type === 'youtube_tv');
+    if (existingTvs.length > 0) {
+      const targetId =
+        activeFloorObj?.type === 'youtube_tv' ? activeFloorObj.id : 'all';
+      updateObjectVideoUrl(targetId, canonical);
+      setStatusToast(`Programmed 3D YouTube TV to play video (${vidId})!`);
+    } else {
+      // Also place a TV on the right wall at (5, 0) if none exists yet so the Admin sees it immediately!
+      placeFurnitureAtTile(
+        {
+          type: 'youtube_tv',
+          label: HABBO_ENGLISH_NAMES['youtube_tv'],
+          colorVariant: '#EF4444',
+          rotation: 'se',
+          videoUrl: canonical,
+        },
+        5,
+        0
+      );
+      setStatusToast(`Added & programmed 3D YouTube TV (${vidId})!`);
+    }
+  };
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center p-6 font-sans text-xs">
+        Loading Builders&apos; Club Warehouse...
+      </div>
+    );
+  }
+
+  // --- SECRET OWNER GATE (Styled as a classic Habbo Dialog on Black Background) ---
+  if (!isAdminAuthenticated) {
+    return (
+      <div className="min-h-screen bg-black text-[#1E1E1E] flex items-center justify-center p-4 select-none">
+        <div
+          data-testid="secret-admin-gate"
+          className="w-full max-w-[380px] rounded-[6px] border-2 border-black bg-[#E2E2DE] shadow-[0_12px_40px_rgba(0,0,0,0.9)] overflow-hidden"
+        >
+          {/* Classic Gold Habbo Title Bar */}
+          <div className="flex items-center justify-between bg-[#D4912A] border-b-2 border-[#8C5A0E] px-3 py-1.5 shadow-[inset_0_1px_0_#F2C166]">
+            <span className="text-xs font-bold text-white drop-shadow-[0_1px_0_rgba(0,0,0,0.6)]">
+              Builders&apos; Club Warehouse · Private Access
+            </span>
+            <Link
+              href="/"
+              title="Back to Room"
+              className="flex h-[18px] w-[18px] items-center justify-center rounded-[2px] border border-black bg-[#C93B2B] text-white hover:bg-[#E04836]"
+            >
+              <X className="h-3 w-3 stroke-[3]" />
+            </Link>
+          </div>
+
+          {/* Dark Builders' Club Banner */}
+          <div className="flex items-center gap-3 bg-[#2C2A29] border-b border-black px-3.5 py-3 text-white">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-black bg-[#F59E0B] text-black shadow-inner">
+              <Lock className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="text-sm font-bold leading-tight">
+                Owner Zone (Higma)
+              </div>
+              <div className="text-[11px] text-[#CCCCCC] mt-0.5">
+                Enter your secret passcode to open the room floor studio.
+              </div>
+            </div>
+          </div>
+
+          {/* Form Body */}
+          <form onSubmit={handlePasscodeSubmit} className="p-4 space-y-3">
+            <div>
+              <label
+                htmlFor="admin-passcode-input"
+                className="block text-[11px] font-bold text-[#333333] mb-1"
+              >
+                Secret passcode or owner email:
+              </label>
+              <input
+                id="admin-passcode-input"
+                data-testid="admin-passcode-input"
+                type="password"
+                autoComplete="off"
+                value={passcodeInput}
+                onChange={(e) => {
+                  setPasscodeInput(e.target.value);
+                  setAuthError(null);
+                }}
+                placeholder="e.g. HIGMA-777"
+                className="w-full rounded-[3px] border border-[#7A7A76] bg-white px-2.5 py-1.5 text-xs text-black placeholder:text-[#888888] focus:border-black focus:outline-none shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]"
+              />
+            </div>
+
+            {authError && (
+              <div
+                role="alert"
+                className="rounded-[3px] border border-[#991B1B] bg-[#FEE2E2] px-2.5 py-1.5 text-[11px] font-medium text-[#7F1D1D]"
+              >
+                {authError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <Link
+                href="/"
+                className="inline-flex items-center gap-1 rounded-[3px] border border-black bg-[#CCCCCC] px-3 py-1.5 text-[11px] font-bold text-[#222222] hover:bg-[#DDDDDD] shadow-[inset_0_1px_0_#FFFFFF]"
+              >
+                <ArrowLeft className="h-3 w-3" />
+                <span>Back</span>
+              </Link>
+
+              <button
+                type="submit"
+                data-testid="admin-auth-submit"
+                className="inline-flex items-center gap-1.5 rounded-[3px] border-2 border-black bg-[#D49A2A] px-4 py-1.5 text-xs font-bold text-white hover:bg-[#E5AA3A] shadow-[inset_0_1px_0_#F7CA65] drop-shadow-[0_1px_0_rgba(0,0,0,0.5)]"
+              >
+                <Unlock className="h-3.5 w-3.5" />
+                <span>Open Warehouse</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- AUTHENTIC HABBO BUILDERS' CLUB ("Builders' Club Warehouse") FLOOR STUDIO ---
+  return (
+    <div className="min-h-screen bg-black text-white flex flex-col lg:flex-row items-start justify-between p-2 sm:p-3 gap-3 overflow-x-hidden select-none">
+      {/* LEFT WINDOW: BUILDERS' CLUB WAREHOUSE */}
+      <aside
+        data-testid="admin-dnd-sidebar"
+        aria-label="Builders' Club Warehouse"
+        className="w-full lg:w-[412px] shrink-0 rounded-[6px] border-2 border-black bg-[#E2E2DE] text-[#1E1E1E] shadow-[0_8px_32px_rgba(0,0,0,0.95)] overflow-hidden z-20"
+      >
+        {/* 1. Gold Title Bar */}
+        <div className="relative flex items-center justify-center bg-[#D4912A] border-b-2 border-[#8C5A0E] px-3 py-1 shadow-[inset_0_1px_0_#F2C166]">
+          <h1 className="text-[12px] font-bold tracking-tight text-white drop-shadow-[0_1px_0_rgba(0,0,0,0.65)]">
+            Builders&apos; Club Warehouse
+          </h1>
+          <div className="absolute right-1.5 top-1 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={logoutAdmin}
+              title="Lock owner access"
+              className="flex h-[17px] px-1.5 items-center justify-center rounded-[2px] border border-black bg-[#4A4745] text-[9px] font-bold text-white hover:bg-[#615D5B]"
+            >
+              Lock
+            </button>
+            <Link
+              href="/"
+              title="Close and return to room"
+              className="flex h-[17px] w-[17px] items-center justify-center rounded-[2px] border border-black bg-[#C93B2B] text-white hover:bg-[#E04836] shadow-[inset_0_1px_0_#F08070]"
+            >
+              <X className="h-3 w-3 stroke-[3]" />
+            </Link>
+          </div>
+        </div>
+
+        {/* 2. Dark Charcoal Status Banner with Hard-Hat Icon */}
+        <div
+          className="flex items-center gap-3.5 bg-[#2B2827] border-b-2 border-black px-3.5 py-2.5 text-white"
+          style={{
+            backgroundImage:
+              'radial-gradient(rgba(255,255,255,0.05) 1px, transparent 0)',
+            backgroundSize: '12px 12px',
+          }}
+        >
+          {/* Yellow Builders' Club Hard-Hat Pixel Badge */}
+          <div className="flex flex-col items-center justify-center shrink-0">
+            <div className="h-2.5 w-6 rounded-t-full border border-black bg-[#FACC15] shadow-[inset_0_1px_0_#FEF08A]" />
+            <div className="h-1.5 w-8 border border-black bg-[#EAB308]" />
+            <div className="mt-0.5 flex items-center gap-0.5 rounded-[2px] border border-black bg-[#D97706] px-1 py-0.5 text-[7px] font-black leading-none text-white">
+              BC
+            </div>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="text-[16px] font-bold leading-tight text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
+              Your BC Status: Free Trial
+            </div>
+            <div className="mt-0.5 text-[11px] leading-snug text-[#CCCCCC]">
+              Time Left:{' '}
+              <span className="font-bold text-[#F37021]">Free Trial</span>
+            </div>
+            <div className="text-[11px] leading-snug text-[#CCCCCC]">
+              Borrowed Items:{' '}
+              <span
+                className="font-bold text-[#F37021]"
+                data-testid="metric-total-objects"
+              >
+                {objects.length}
+              </span>
+              <span className="font-bold text-[#F37021]">/100</span>
+            </div>
+          </div>
+        </div>
+
+        {/* 3. Main Dialog Body: Left Category Tree + Right Preview, Slots, Palette & Buttons */}
+        <div className="p-2 flex flex-col sm:flex-row gap-2 bg-[#E2E2DE]">
+          {/* LEFT COLUMN: Search Input + Category Tree */}
+          <div className="w-full sm:w-[144px] shrink-0 flex flex-col gap-1.5">
+            {/* Search Input ("Search here" + pencil icon) */}
+            <div className="relative flex items-center">
+              <input
+                type="search"
+                value={sidebarSearch}
+                onChange={(e) => setSidebarSearch(e.target.value)}
+                placeholder="Search here"
+                aria-label="Search here"
+                className="w-full rounded-[4px] border border-[#8E8E8A] bg-white pl-2 pr-6 py-1 text-[11px] text-black placeholder:text-[#999999] focus:border-black focus:outline-none shadow-[inset_0_1px_2px_rgba(0,0,0,0.18)]"
+              />
+              <Pencil
+                aria-hidden="true"
+                className="pointer-events-none absolute right-1.5 h-3 w-3 text-[#D97706]"
+              />
+            </div>
+
+            {/* Category List Box */}
+            <div className="flex-1 rounded-[2px] border border-[#8E8E8A] bg-[#EEEEEE] flex flex-col overflow-hidden min-h-[340px]">
+              {/* Top quick row: Building Blocks */}
+              <button
+                type="button"
+                onClick={() => {
+                  setBcCategory('blocks_bottles');
+                  handleSelectObjectType('building_block');
+                }}
+                className="flex items-center gap-1.5 px-2 py-1 text-left text-[11px] font-bold text-[#555555] hover:bg-[#E4E4E0] border-b border-[#DCDCD8]"
+              >
+                <span className="inline-block h-2.5 w-2.5 shrink-0 border border-black bg-[#FACC15]" />
+                <span className="truncate">Building Blocks</span>
+              </button>
+
+              {/* Static top header item ("By Type" in classic Habbo orange bar) */}
+              <div className="flex items-center justify-between bg-[#F37021] px-2 py-1 text-[11px] font-bold text-white border-b border-[#C85410]">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-2.5 w-2.5 border border-black bg-[#FDE047]" />
+                  <span>By Type</span>
+                </span>
+                <span className="text-[9px]">▼</span>
+              </div>
+
+              {/* Sub-categories */}
+              <div className="flex-1 overflow-y-auto py-1 space-y-0.5">
+                {BC_CATEGORIES.map((cat) => {
+                  const isActive = bcCategory === cat.id;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setBcCategory(cat.id)}
+                      className={`w-full flex items-center gap-2 px-2.5 py-1 text-left text-[11px] transition-colors ${
+                        isActive
+                          ? 'bg-[#D6D6D2] font-bold text-[#D9531E] italic'
+                          : 'text-[#B45309] hover:bg-[#E4E4E0] italic'
+                      }`}
+                    >
+                      <span
+                        className="inline-block h-2.5 w-2.5 shrink-0 border border-black"
+                        style={{ backgroundColor: cat.iconColor }}
+                      />
+                      <span className="truncate">{cat.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Bottom quick room presets & Animal Manager inside the left tree footer */}
+              <div className="border-t border-[#BDBDB8] bg-[#E2E2DE] p-1.5 space-y-1">
+                <div className="text-[9px] font-bold uppercase text-[#555555] px-0.5">
+                  Room Builder
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  <button
+                    type="button"
+                    data-testid="preset-organized-room"
+                    onClick={() => {
+                      applyOrganizedPreset();
+                      setStatusToast('Organized layout applied!');
+                    }}
+                    className="flex items-center justify-center gap-1 rounded-[2px] border border-[#7A7A76] bg-[#F4F4F0] px-1.5 py-1 text-[10px] font-bold text-[#222222] hover:bg-white"
+                    title="Neatly organize all furniture"
+                  >
+                    <Wand2 className="h-2.5 w-2.5 text-[#D97706]" />
+                    <span>Organize</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="preset-clear-floor"
+                    onClick={() => {
+                      clearFloorToMinimal();
+                      setSelectedPlacedObjectId(null);
+                      setStatusToast('All floor furniture cleared!');
+                    }}
+                    className="flex items-center justify-center gap-1 rounded-[2px] border border-[#7A7A76] bg-[#F4F4F0] px-1.5 py-1 text-[10px] font-bold text-[#222222] hover:bg-white"
+                    title="Clear all furniture from the floor"
+                  >
+                    <Eraser className="h-2.5 w-2.5 text-[#DC2626]" />
+                    <span>Clear All</span>
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowGridOverlay((prev) => !prev)}
+                    className={`rounded-[2px] border px-1.5 py-0.5 text-[10px] font-bold ${
+                      showGridOverlay
+                        ? 'border-black bg-[#D49A2A] text-white'
+                        : 'border-[#7A7A76] bg-[#F4F4F0] text-[#333333]'
+                    }`}
+                  >
+                    Grid: {showGridOverlay ? 'ON' : 'OFF'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetRoomToDefault();
+                      setStatusToast('Default room & animals restored.');
+                    }}
+                    className="flex items-center justify-center gap-1 rounded-[2px] border border-[#7A7A76] bg-[#F4F4F0] px-1.5 py-0.5 text-[10px] font-bold text-[#333333] hover:bg-white"
+                  >
+                    <RotateCcw className="h-2.5 w-2.5" />
+                    <span>Default</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* RIGHT COLUMN: 3D Isometric Preview + Icon Grid + Palette + Action Buttons */}
+          <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+            {/* 1. Isometric 3D Furniture Preview Box */}
+            <div className="relative h-[116px] w-full rounded-[2px] border border-[#7A7A76] bg-[#B2B2AE] overflow-hidden shadow-[inset_0_1px_2px_rgba(0,0,0,0.25)]">
+              <canvas
+                ref={builderPreviewCanvasRef}
+                width={242}
+                height={116}
+                className="h-full w-full block"
+              />
+              {/* Selected Item Title at Top-Left */}
+              <div className="pointer-events-none absolute left-2 top-1.5 max-w-[165px] truncate text-[11px] font-bold text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.85)]">
+                {HABBO_ENGLISH_NAMES[selectedType] ||
+                  OBJECT_CATALOG[selectedType].name}
+              </div>
+
+              {/* 360° Rotation Arrows at Top-Right */}
+              <div className="absolute right-1.5 top-1.5 flex items-center gap-1">
+                <button
+                  type="button"
+                  data-testid="sidebar-rotation-left"
+                  onClick={() =>
+                    setRotation((prev) => getNextRotation(prev, -1))
+                  }
+                  title="Rotate left (-90° / 360°)"
+                  className="flex h-[20px] w-[20px] items-center justify-center rounded-[3px] border border-black bg-[#D6D6D2] text-black hover:bg-white shadow-[inset_0_1px_0_#FFFFFF]"
+                >
+                  <ArrowLeft className="h-3 w-3 stroke-[2.5]" />
+                </button>
+                <button
+                  type="button"
+                  data-testid="sidebar-rotation-toggle"
+                  onClick={() =>
+                    setRotation((prev) => getNextRotation(prev, 1))
+                  }
+                  title="Rotate right (+90° / 360°)"
+                  className="flex h-[20px] w-[20px] items-center justify-center rounded-[3px] border border-black bg-[#D6D6D2] text-black hover:bg-white shadow-[inset_0_1px_0_#FFFFFF]"
+                >
+                  <ArrowRight className="h-3 w-3 stroke-[2.5]" />
+                </button>
+              </div>
+
+              {/* 360° Angle Indicator Badge at Bottom-Right */}
+              <span
+                data-testid="sidebar-rotation-angle"
+                className="pointer-events-none absolute bottom-1.5 right-1.5 rounded-[2px] border border-black/60 bg-black/65 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white"
+              >
+                {rotation.toUpperCase()} ·{' '}
+                {rotation === 'se'
+                  ? '0°'
+                  : rotation === 'sw'
+                    ? '90°'
+                    : rotation === 'nw'
+                      ? '180°'
+                      : '270°'}
+              </span>
+            </div>
+
+            {/* 2. Scrollable Furniture Icon Grid */}
+            <div className="rounded-[2px] border border-[#8E8E8A] bg-[#CCCCCC] p-1.5 h-[116px] overflow-y-auto shadow-[inset_0_1px_2px_rgba(0,0,0,0.18)]">
+              <div className="grid grid-cols-6 gap-1">
+                {catalogEntries.map((spec) => {
+                  const isSelected = selectedType === spec.type;
+                  return (
+                    <button
+                      key={spec.type}
+                      type="button"
+                      draggable
+                      data-testid={`dnd-furniture-item-${spec.type}`}
+                      onDragStart={(e) => handleSidebarDragStart(e, spec.type)}
+                      onDragEnd={handleSidebarDragEnd}
+                      onClick={() => handleSelectObjectType(spec.type)}
+                      title={HABBO_ENGLISH_NAMES[spec.type] || spec.name}
+                      className={`flex h-[34px] w-full items-center justify-center rounded-[3px] transition-all cursor-grab active:cursor-grabbing ${
+                        isSelected
+                          ? 'border-2 border-[#E59400] bg-[#F5F5F2] shadow-[0_0_0_1px_#000000]'
+                          : 'border border-[#8E8E8A] bg-[#DFDFDB] hover:bg-[#ECECE8] shadow-[inset_0_1px_0_#FFFFFF]'
+                      }`}
+                    >
+                      <FurniSlotThumbnail
+                        type={spec.type}
+                        colorVariant={
+                          isSelected ? colorVariant : spec.defaultColor
+                        }
+                        projects={projects}
+                        spritesReady={spritesReady}
+                      />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* 3. Palette Section */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between px-0.5">
+                <span className="text-[11px] font-medium text-[#222222]">
+                  Palette
+                </span>
+                {/* Clean Placement Rule Toggle (1/Tile vs Stack) */}
+                <div className="flex items-center gap-1 text-[10px]">
+                  <button
+                    type="button"
+                    data-testid="placement-mode-replace"
+                    onClick={() => setPlacementMode('replace')}
+                    className={`rounded-[2px] border px-1.5 py-0.5 font-bold ${
+                      placementMode === 'replace'
+                        ? 'border-black bg-[#D49A2A] text-white'
+                        : 'border-[#8E8E8A] bg-[#D6D6D2] text-[#333333]'
+                    }`}
+                  >
+                    1/Tile
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="placement-mode-stack"
+                    onClick={() => setPlacementMode('stack')}
+                    className={`rounded-[2px] border px-1.5 py-0.5 font-bold ${
+                      placementMode === 'stack'
+                        ? 'border-black bg-[#00748C] text-white'
+                        : 'border-[#8E8E8A] bg-[#D6D6D2] text-[#333333]'
+                    }`}
+                  >
+                    Stack
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-[2px] border border-[#8E8E8A] bg-[#CCCCCC] p-1.5 shadow-[inset_0_1px_2px_rgba(0,0,0,0.18)]">
+                <div className="grid grid-cols-11 gap-[3px]">
+                  {HABBO_BC_PALETTE.map((hex, idx) => {
+                    const isPicked =
+                      colorVariant.toLowerCase() === hex.toLowerCase();
+                    return (
+                      <button
+                        key={`${hex}-${idx}`}
+                        type="button"
+                        onClick={() => setColorVariant(hex)}
+                        title={`Color ${hex}`}
+                        className={`h-[14px] w-full rounded-[2px] border ${
+                          isPicked
+                            ? 'border-black ring-1 ring-black scale-110 z-10'
+                            : 'border-[#666662] hover:border-black'
+                        }`}
+                        style={{ backgroundColor: hex }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* 4. Helper Hint + Classic Gold & Teal Habbo Action Buttons */}
+            <div className="pt-0.5 space-y-1.5">
+              <div className="text-[11px] text-[#222222] px-0.5">
+                Drag or click furni to place them in the room!
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  data-testid="admin-place-furni-btn"
+                  onClick={() => {
+                    placeFurnitureAtTile(
+                      {
+                        type: selectedType,
+                        label: objectLabel,
+                        colorVariant,
+                        rotation,
+                        projectId: linkedProjectId,
+                        videoUrl:
+                          selectedType === 'youtube_tv'
+                            ? tvVideoUrlInput
+                            : undefined,
+                      },
+                      coordX,
+                      coordY
+                    );
+                  }}
+                  className="h-[28px] rounded-[3px] border-2 border-black bg-[#D49A2A] px-2 text-[11px] font-bold text-white hover:bg-[#E3A836] active:translate-y-[1px] shadow-[inset_0_1px_0_#F7CA65] whitespace-nowrap"
+                >
+                  Place Furni
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="click-to-place-toggle"
+                  onClick={() => setClickToPlaceMode((prev) => !prev)}
+                  className={`h-[28px] rounded-[3px] border-2 border-black px-2 text-[11px] font-bold text-white active:translate-y-[1px] whitespace-nowrap ${
+                    clickToPlaceMode
+                      ? 'bg-[#00748C] hover:bg-[#0089A6] shadow-[inset_0_1px_0_#38BDF8]'
+                      : 'bg-[#52524E] hover:bg-[#666662] shadow-[inset_0_1px_0_#999995]'
+                  }`}
+                >
+                  Click to Place
+                </button>
+              </div>
+
+              {/* 5. 3D YouTube TV Programmer Box inside Floor Studio */}
+              <form
+                onSubmit={handleProgramTvUrl}
+                data-testid="admin-tv-program-panel"
+                className="mt-1.5 rounded-[3px] border border-[#8E8E8A] bg-[#D6D6D2] p-2 space-y-1.5"
+              >
+                <div className="flex items-center justify-between">
+                  <label
+                    htmlFor="admin-tv-url-input"
+                    className="flex items-center gap-1 text-[10px] font-bold text-[#1E1E1E]"
+                  >
+                    <Tv className="h-3 w-3 text-[#C93B2B]" />
+                    <span>Program 3D YouTube TV (Shared Live)</span>
+                  </label>
+                  <span className="rounded bg-[#C93B2B] px-1 py-0.5 text-[8px] font-bold uppercase text-white">
+                    284×102 Cinema Wall
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <input
+                    id="admin-tv-url-input"
+                    data-testid="admin-tv-url-input"
+                    type="text"
+                    value={tvVideoUrlInput}
+                    onChange={(e) => {
+                      setTvVideoUrlInput(e.target.value);
+                      setTvUrlError(null);
+                    }}
+                    placeholder="Paste YouTube link (e.g. https://youtu.be/...)"
+                    className="flex-1 min-w-0 rounded-[2px] border border-[#7A7A76] bg-white px-2 py-1 text-[10px] text-black placeholder:text-[#888888] focus:border-black focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    data-testid="admin-tv-url-submit"
+                    className="shrink-0 rounded-[2px] border border-black bg-[#C93B2B] px-2.5 py-1 text-[10px] font-bold text-white hover:bg-[#E04836]"
+                  >
+                    Broadcast
+                  </button>
+                </div>
+                {tvUrlError && (
+                  <div
+                    role="alert"
+                    data-testid="admin-tv-url-error"
+                    className="text-[10px] font-bold text-[#991B1B]"
+                  >
+                    {tvUrlError}
+                  </div>
+                )}
+              </form>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* RIGHT VIEWPORT: LIVE ISOMETRIC ROOM ON PURE BLACK BACKGROUND */}
+      <main className="relative flex-1 w-full min-h-[540px] lg:min-h-[calc(100vh-24px)] flex flex-col items-center justify-between bg-black overflow-hidden">
+        {/* Top-Right Classic Habbo Mini HUD & Roaming Animals Manager */}
+        <div className="w-full flex flex-wrap items-start justify-between gap-2 px-2 pt-1 z-10">
+          {/* Active Animals Control Panel (Admin can remove individual animals or all animals) */}
+          <div
+            data-testid="admin-animals-panel"
+            className="flex flex-wrap items-center gap-1.5 rounded-[4px] border-2 border-black bg-[#2B2827] px-2.5 py-1.5 text-[11px] text-white shadow"
+          >
+            <span className="font-bold text-[#FACC15]">
+              Room Animals ({pets.length}):
+            </span>
+            {pets.length > 0 ? (
+              pets.map((pet) => (
+                <button
+                  key={pet.id}
+                  type="button"
+                  data-testid={`admin-remove-pet-${pet.id}`}
+                  onClick={() => {
+                    removePet(pet.id);
+                    setStatusToast(`Removed ${pet.name} from the room!`);
+                  }}
+                  title={`Remove ${pet.name} from the room`}
+                  className="inline-flex items-center gap-1 rounded-[3px] border border-black bg-[#4A4745] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#C93B2B] transition-colors"
+                >
+                  <span>{pet.name}</span>
+                  <Trash2 className="h-3 w-3 text-rose-300" />
+                </button>
+              ))
+            ) : (
+              <span className="text-[10px] text-[#CCCCCC]">
+                No roaming animals
+              </span>
+            )}
+
+            {pets.length > 0 && (
+              <button
+                type="button"
+                data-testid="admin-clear-all-pets"
+                onClick={() => {
+                  clearAllPets();
+                  setStatusToast('All animals removed from the room!');
+                }}
+                className="inline-flex items-center gap-1 rounded-[3px] border border-black bg-[#C93B2B] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#E04836]"
+              >
+                <Trash2 className="h-3 w-3" />
+                <span>Remove All Animals</span>
+              </button>
+            )}
+
+            {pets.length < 4 && (
+              <button
+                type="button"
+                data-testid="admin-restore-pets"
+                onClick={() => {
+                  restoreDefaultPets();
+                  setStatusToast('All room animals restored!');
+                }}
+                className="inline-flex items-center gap-1 rounded-[3px] border border-black bg-[#00748C] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#0089A6]"
+              >
+                <RotateCcw className="h-3 w-3" />
+                <span>Restore Animals</span>
+              </button>
+            )}
+          </div>
+
+          {/* Right-side Habbo HUD Pill */}
+          <div className="flex items-center gap-2">
+            {statusToast && (
+              <div
+                role="status"
+                data-testid="admin-placement-feedback"
+                className="rounded-[4px] border border-black bg-white px-2.5 py-1 text-[11px] font-bold text-black shadow"
+              >
+                {statusToast}
+              </div>
+            )}
+            <Link
+              href="/"
+              className="rounded-[4px] border-2 border-black bg-[#15803D] hover:bg-[#16A34A] px-3 py-1 text-[11px] font-bold text-white shadow-[inset_0_1px_0_#4ADE80]"
+            >
+              View Public Room (/)
+            </Link>
+          </div>
+        </div>
+
+        {/* Center Isometric Room Canvas + Live 3D YouTube TV Screen Overlay */}
+        <div className="relative flex-1 w-full flex items-center justify-center my-auto">
+          <div className="relative w-full max-w-[760px]">
+            <canvas
+              ref={previewCanvasRef}
+              data-testid="admin-iso-drop-canvas"
+              onMouseMove={handleCanvasMouseMove}
+              onMouseLeave={() => setCanvasHoverTile(null)}
+              onDragOver={handleCanvasDragOver}
+              onDragLeave={() => setDropHoverTile(null)}
+              onDrop={handleCanvasDrop}
+              onClick={handleCanvasClick}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                const tile = resolveTileFromPointer(e.clientX, e.clientY);
+                if (!tile) return;
+                const topObj = getTopObjectAtTile(tile.x, tile.y, objects);
+                if (topObj) {
+                  removeObject(topObj.id);
+                  setSelectedPlacedObjectId(null);
+                  setStatusToast(
+                    `Removed ${HABBO_ENGLISH_NAMES[topObj.type] || topObj.label} from (${tile.x}, ${tile.y})!`
+                  );
+                }
+              }}
+              className="w-full h-auto cursor-pointer block"
+              style={{ imageRendering: 'pixelated' }}
+            />
+            <IsometricYoutubeTvOverlay
+              objects={objects}
+              originX={LOGICAL_ORIGIN_X}
+              originY={LOGICAL_ORIGIN_Y}
+              scale={canvasDisplayScale}
+              onSelectTv={(tv) => {
+                setSelectedPlacedObjectId(tv.id);
+                setCoordX(tv.x);
+                setCoordY(tv.y);
+                if (tv.videoUrl) {
+                  setTvVideoUrlInput(tv.videoUrl);
+                }
+              }}
+            />
+          </div>
+        </div>
+
+        {/* Bottom Classic Habbo Selected Furni Action Bar */}
+        <div className="w-full max-w-[740px] flex flex-wrap items-center justify-center gap-2 pb-2 px-2 z-10">
+          {objects.length > 0 && (
+            <select
+              aria-label="Select placed furniture item"
+              data-testid="admin-placed-furni-select"
+              value={activeFloorObj?.id || ''}
+              onChange={(e) => {
+                const picked = objects.find((o) => o.id === e.target.value);
+                if (picked) {
+                  setSelectedPlacedObjectId(picked.id);
+                  setCoordX(picked.x);
+                  setCoordY(picked.y);
+                }
+              }}
+              className="h-[30px] rounded-[4px] border-2 border-black bg-[#E2E2DE] px-2 text-[11px] font-bold text-black focus:outline-none"
+            >
+              <option value="" disabled>
+                Select Furni ({objects.length} in room)...
+              </option>
+              {objects.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {HABBO_ENGLISH_NAMES[o.type] || o.label} ({o.x},{o.y}) ·{' '}
+                  {o.rotation.toUpperCase()}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {activeFloorObj ? (
+            <div className="flex flex-wrap items-center gap-1.5 rounded-[5px] border-2 border-black bg-[#2B2827] px-3 py-1.5 text-[11px] text-white shadow-lg">
+              <span className="font-bold text-[#FACC15] mr-1">
+                {HABBO_ENGLISH_NAMES[activeFloorObj.type] ||
+                  activeFloorObj.label}{' '}
+                ({activeFloorObj.x},{activeFloorObj.y})
+              </span>
+
+              <button
+                type="button"
+                onClick={() => handleNudgePlacedObject(activeFloorObj.id, -1, 0)}
+                title="Move North-West"
+                className="rounded border border-black bg-[#4A4745] p-1 hover:bg-[#666260]"
+              >
+                <ArrowLeft className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleNudgePlacedObject(activeFloorObj.id, 0, -1)}
+                title="Move North-East"
+                className="rounded border border-black bg-[#4A4745] p-1 hover:bg-[#666260]"
+              >
+                <ArrowUp className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleNudgePlacedObject(activeFloorObj.id, 0, 1)}
+                title="Move South-West"
+                className="rounded border border-black bg-[#4A4745] p-1 hover:bg-[#666260]"
+              >
+                <ArrowDown className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleNudgePlacedObject(activeFloorObj.id, 1, 0)}
+                title="Move South-East"
+                className="rounded border border-black bg-[#4A4745] p-1 hover:bg-[#666260]"
+              >
+                <ArrowRight className="h-3 w-3" />
+              </button>
+
+              <button
+                type="button"
+                data-testid="floor-object-rotate-360"
+                onClick={() => rotateObject(activeFloorObj.id, 1)}
+                className="inline-flex items-center gap-1 rounded border border-black bg-[#00748C] px-2 py-0.5 font-bold text-white hover:bg-[#0089A6]"
+              >
+                <RotateCw className="h-3 w-3" />
+                <span>Rotate 360° ({activeFloorObj.rotation.toUpperCase()})</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="floor-object-remove"
+                onClick={() => {
+                  removeObject(activeFloorObj.id);
+                  setSelectedPlacedObjectId(null);
+                  setStatusToast('Furni picked up and removed!');
+                }}
+                className="inline-flex items-center gap-1 rounded border border-black bg-[#C93B2B] px-2 py-0.5 font-bold text-white hover:bg-[#E04836]"
+              >
+                <Trash2 className="h-3 w-3" />
+                <span>Pick Up</span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 rounded-[5px] border-2 border-black bg-[#D6D6D2] px-3 py-1.5 text-[11px] text-[#222222] shadow">
+              <span className="font-bold">Tile ({coordX}, {coordY})</span>
+              <span>·</span>
+              <span>
+                Click any floor tile or drag a furni item from the Warehouse.
+              </span>
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}

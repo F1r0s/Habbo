@@ -1,0 +1,2079 @@
+'use client';
+
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import Link from 'next/link';
+import { AnimatePresence, motion } from 'motion/react';
+import {
+  Volume2,
+  VolumeX,
+  Music,
+  ExternalLink,
+  X,
+  Armchair,
+  Sparkles,
+  KeyRound,
+  Plus,
+  Sunrise,
+  Sun,
+  Sunset,
+  Moon,
+  Hammer,
+  RotateCcw,
+  RotateCw,
+  Trash2,
+  MousePointerClick,
+  Tv,
+  Shuffle,
+  User,
+} from 'lucide-react';
+import {
+  GRID_SIZE,
+  TILE_HEIGHT,
+  OBJECT_CATALOG,
+  DEFAULT_YOUTUBE_VIDEO_URL,
+  RoomObject,
+  RoomObjectType,
+  ProjectLink,
+  GridCoord,
+  IsometricRotation,
+  TimeOfDayTheme,
+  VisitorAvatarProfile,
+  computeTimeOfDayTheme,
+  screenToGrid,
+  gridToScreen,
+  isWithinGrid,
+  isTileWalkable,
+  findPath,
+  findSittableObjectAtTile,
+  getNextRotation,
+  getNextStackHeightAtTile,
+  extractYouTubeVideoId,
+  normalizeYouTubeEmbedUrl,
+  MIN_OBJECT_SCALE,
+  MAX_OBJECT_SCALE,
+  clampObjectScale,
+  normalizeRotationAngle,
+  angleToIsometricRotation,
+} from '@/lib/room-engine';
+import {
+  renderIsometricRoom,
+  renderFurniSlotThumbnail,
+} from '@/lib/isometric-painter';
+import { loadHabboSpriteAtlas } from '@/lib/habbo-sprites';
+import { useRoomStore, pixelAudio } from '@/lib/use-room-store';
+import DigitalPet from './DigitalPet';
+import ProjectModal from './ProjectModal';
+import AdminConsoleModal from './AdminConsoleModal';
+import IsometricYoutubeTvOverlay, {
+  dispatchTvControlEvent,
+} from './IsometricYoutubeTvOverlay';
+import IsometricWallPostersOverlay from './IsometricWallPostersOverlay';
+
+const TIME_OVERRIDE_PRESETS: Array<{ label: string; hour: number | null }> = [
+  { label: 'AUTO', hour: null },
+  { label: 'DAWN', hour: 7 },
+  { label: 'DAY', hour: 13 },
+  { label: 'SUNSET', hour: 19 },
+  { label: 'NIGHT', hour: 23 },
+];
+
+const NOTIFICATION_AUTO_DISMISS_MS = 5200;
+
+const QUICK_PLACEABLE_TYPES: RoomObjectType[] = [
+  'youtube_tv',
+  'white_sofa',
+  'wood_stool',
+  'wood_table',
+  'potted_plant',
+  'building_block',
+  'glass_bottle',
+  'luxury_rug_pink',
+  'luxury_rug_blue',
+  'luxury_rug_gold',
+  'royal_crown_gold',
+  'royal_crown_purple',
+  'water_bowl',
+  'pet_cat_basket',
+  'pet_dragon',
+  'floating_screen',
+];
+
+const INTERACTION_FLAVOR_TEXT: Record<RoomObjectType, string> = {
+  youtube_tv:
+    'Window-sized 3D Isometric YouTube Television! Broadcasts live YouTube videos in 3D for everyone visiting the room.',
+  white_sofa:
+    'Classic Habbo Club white leather two-seater sofa. Click to walk over and sit down, or rotate in 360° (SE, SW, NW, NE).',
+  wood_stool:
+    'Round carved oak bar stool with cushioned pixel top. Click to sit down or rotate 360°.',
+  wood_table:
+    'Warm mahogany Habbo lounge table with bevelled legs. Great centerpiece for drinks and collectibles.',
+  potted_plant:
+    'Lush tropical indoor bamboo plant in a ceramic pot. Brings fresh pixel greenery to the suite.',
+  building_block:
+    'Stackable isometric Habbo Builders’ Club cube. Can be colour-tinted, rotated 360°, and stacked.',
+  glass_bottle:
+    'Translucent pixel beverage bottle with specular shine. Refreshing lounge prop!',
+  luxury_rug_pink:
+    'Woven magenta-pink Habbo floor rug with pixel fringe. Walkable floor decor.',
+  luxury_rug_blue:
+    'Woven sky-blue Habbo floor rug with pixel fringe. Walkable floor decor.',
+  luxury_rug_gold:
+    'Royal gold woven Habbo floor carpet with ornamental border. Walkable floor decor.',
+  royal_crown_gold:
+    'Rare sovereign golden crown set with ruby & emerald pixels on a velvet pillow.',
+  royal_crown_purple:
+    'Amethyst sovereign crown collectible displayed on a velvet cushion.',
+  pet_dragon:
+    'Draco’s enchanted dragon perch! Draco patrols the room randomly flapping his wings.',
+  pet_cat_basket:
+    'Cozy woven wicker cat basket with a soft red cushion while Chat & Milo roam the floor.',
+  water_bowl:
+    'Pixel pet dish filled with fresh water and a slice of pink salmon for the cats.',
+  neon_bulletin:
+    'Wall-mounted holographic project screen. Click Visit or Details to inspect the linked project.',
+  floating_screen:
+    'Interactive holographic project monitor. Click to inspect the linked portfolio project.',
+  admin_console:
+    'Owner room terminal (Higma). Allows quick-spawning items or entering the Builders’ Club studio.',
+};
+
+function MiniFurniIcon({
+  type,
+  colorVariant,
+  projects,
+}: {
+  type: RoomObjectType;
+  colorVariant?: string;
+  projects: ProjectLink[];
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    renderFurniSlotThumbnail({
+      ctx,
+      width: canvas.width,
+      height: canvas.height,
+      type,
+      colorVariant: colorVariant || OBJECT_CATALOG[type].defaultColor,
+      projects,
+    });
+  }, [type, colorVariant, projects]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={36}
+      height={36}
+      className="h-8 w-8 pointer-events-none block shrink-0"
+      style={{ imageRendering: 'pixelated' }}
+    />
+  );
+}
+
+export default function HabboRoomView() {
+  const {
+    objects,
+    projects,
+    pets,
+    chatBubbles,
+    isAdminAuthenticated,
+    isMuted,
+    isMusicPlaying,
+    visitorAvatar,
+    useOwnerSkin,
+    addObject,
+    rotateObject,
+    updateObjectTransform,
+    updateObjectVideoUrl,
+    randomizeVisitorAvatar,
+    toggleOwnerSkin,
+    removeObject,
+    removePet,
+    clearAllPets,
+    restoreDefaultPets,
+    resetRoomToDefault,
+    pushChatBubble,
+    toggleMute,
+    toggleAmbientMusic,
+    ensureAmbientMusicStarted,
+  } = useRoomStore();
+
+  const activeSpeakerName = useOwnerSkin ? 'Higma' : visitorAvatar.name;
+  const [roomTvUrlDraft, setRoomTvUrlDraft] = useState<string>(
+    DEFAULT_YOUTUBE_VIDEO_URL
+  );
+  const [roomTvUrlFeedback, setRoomTvUrlFeedback] = useState<string | null>(
+    null
+  );
+
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Viewport projection metrics for syncing Framer Motion DigitalPet coordinates & floating popups
+  const [viewportMetrics, setViewportMetrics] = useState({
+    originX: 720,
+    originY: 360,
+    scale: 1,
+  });
+
+  // Time of Day state
+  const [systemHour, setSystemHour] = useState<number>(() =>
+    new Date().getHours()
+  );
+  const [presetIndex, setPresetIndex] = useState<number>(0);
+
+  useEffect(() => {
+    const updateClock = () => setSystemHour(new Date().getHours());
+    updateClock();
+    const interval = window.setInterval(updateClock, 60_000);
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const activePreset =
+    TIME_OVERRIDE_PRESETS[presetIndex] || TIME_OVERRIDE_PRESETS[0];
+  const effectiveHour =
+    activePreset.hour !== null ? activePreset.hour : systemHour;
+  const timeTheme: TimeOfDayTheme = computeTimeOfDayTheme(effectiveHour);
+
+  // In-Room Interactive Furniture Placement Dock State
+  const [isBuildDockOpen, setIsBuildDockOpen] = useState<boolean>(false);
+  const [isPlaceOnClickActive, setIsPlaceOnClickActive] =
+    useState<boolean>(false);
+  const [selectedFurniType, setSelectedFurniType] =
+    useState<RoomObjectType>('white_sofa');
+  const [selectedFurniRotation, setSelectedFurniRotation] =
+    useState<IsometricRotation>('se');
+  const [selectedFurniColor, setSelectedFurniColor] =
+    useState<string>('#f8fafc');
+  const furniBrushRef = useRef<{
+    type: RoomObjectType;
+    rotation: IsometricRotation;
+    color: string;
+  }>({
+    type: 'white_sofa',
+    rotation: 'se',
+    color: '#f8fafc',
+  });
+  const [hoveredGridTile, setHoveredGridTile] = useState<GridCoord | null>(
+    null
+  );
+
+  // Classic Habbo Pop-Up Description State when clicking any furniture item
+  const [inspectedObjectState, setInspectedObjectState] =
+    useState<RoomObject | null>(null);
+  const [interactionNoticeKey, setInteractionNoticeKey] = useState<number>(0);
+  const [isTooltipHovered, setIsTooltipHovered] = useState<boolean>(false);
+  const [sittingOnObjectId, setSittingOnObjectId] = useState<string | null>(
+    null
+  );
+  const [avatarDebugState, setAvatarDebugState] = useState<{
+    x: number;
+    y: number;
+    facing: IsometricRotation;
+    walking: boolean;
+  }>({ x: 4, y: 5, facing: 'sw', walking: false });
+
+  // Optional full project modal or secret console modal
+  const [activeProject, setActiveProject] = useState<{
+    project: ProjectLink;
+    screenObj?: RoomObject;
+  } | null>(null);
+  const [isConsoleModalOpen, setIsConsoleModalOpen] = useState(false);
+
+  // Resolve active inspected object (live from store if present, or fallback to snapshot)
+  const inspectedObject: RoomObject | null = inspectedObjectState
+    ? objects.find((o) => o.id === inspectedObjectState.id) ||
+      inspectedObjectState
+    : null;
+
+  // Mutable simulation state stored in ref so 60Hz loop never triggers React re-renders
+  const simRef = useRef({
+    objects,
+    projects,
+    chatBubbles,
+    timeTheme,
+    avatarPos: { x: 4, y: 5 },
+    avatarFacing: 'sw' as IsometricRotation,
+    isAvatarSitting: false,
+    pendingSitObject: null as RoomObject | null,
+    pathQueue: [] as GridCoord[],
+    hoveredTile: null as GridCoord | null,
+    hoveredObjectId: null as string | null,
+    selectedObjectId: null as string | null,
+    visitorAvatar: (useOwnerSkin ? null : visitorAvatar) as VisitorAvatarProfile | null,
+    ghostObject: null as {
+      type: RoomObjectType;
+      label: string;
+      x: number;
+      y: number;
+      z: number;
+      rotation: IsometricRotation;
+      colorVariant?: string;
+      projectId?: string;
+    } | null,
+    tick: 0,
+    originX: 720,
+    originY: 360,
+    canvasW: 1440,
+    canvasH: 900,
+    scale: 1,
+  });
+
+  // Load Open-Hotel & Habbo sprites on mount
+  useEffect(() => {
+    loadHabboSpriteAtlas();
+  }, []);
+
+  // Sync latest React store arrays, Time of Day theme, Visitor Avatar & Ghost preview into simRef
+  useEffect(() => {
+    simRef.current.objects = objects;
+    simRef.current.projects = projects;
+    simRef.current.chatBubbles = chatBubbles;
+    simRef.current.timeTheme = timeTheme;
+    simRef.current.visitorAvatar = useOwnerSkin ? null : visitorAvatar;
+
+    if (
+      isAdminAuthenticated &&
+      isBuildDockOpen &&
+      isPlaceOnClickActive &&
+      hoveredGridTile
+    ) {
+      const spec = OBJECT_CATALOG[selectedFurniType];
+      const z = spec.defaultWalkable
+        ? 0
+        : getNextStackHeightAtTile(
+            hoveredGridTile.x,
+            hoveredGridTile.y,
+            objects
+          );
+      simRef.current.ghostObject = {
+        type: selectedFurniType,
+        label: spec.name,
+        x: hoveredGridTile.x,
+        y: hoveredGridTile.y,
+        z,
+        rotation: selectedFurniRotation,
+        colorVariant: selectedFurniColor,
+      };
+    } else {
+      simRef.current.ghostObject = null;
+    }
+  }, [
+    objects,
+    projects,
+    chatBubbles,
+    timeTheme,
+    visitorAvatar,
+    useOwnerSkin,
+    isAdminAuthenticated,
+    isBuildDockOpen,
+    isPlaceOnClickActive,
+    hoveredGridTile,
+    selectedFurniType,
+    selectedFurniRotation,
+    selectedFurniColor,
+  ]);
+
+  // Auto-remove the interaction notification tooltip after NOTIFICATION_AUTO_DISMISS_MS
+  useEffect(() => {
+    if (!inspectedObjectState || isTooltipHovered) return;
+    const timer = window.setTimeout(() => {
+      setInspectedObjectState(null);
+      simRef.current.selectedObjectId = null;
+    }, NOTIFICATION_AUTO_DISMISS_MS);
+    return () => window.clearTimeout(timer);
+  }, [inspectedObjectState, interactionNoticeKey, isTooltipHovered]);
+
+  // Mirror playing state onto document.body.dataset.state
+  useEffect(() => {
+    document.body.dataset.state = 'playing';
+  }, []);
+
+  const walkAvatarTo = useCallback(
+    (targetX: number, targetY: number, sitTarget?: RoomObject | null) => {
+      const sim = simRef.current;
+      const startX = Math.round(sim.avatarPos.x);
+      const startY = Math.round(sim.avatarPos.y);
+
+      // Stand up before walking to a new tile
+      sim.isAvatarSitting = false;
+      sim.pendingSitObject = sitTarget || null;
+      setSittingOnObjectId(null);
+
+      // Determine initial facing direction toward clicked target immediately
+      const totalDx = targetX - sim.avatarPos.x;
+      const totalDy = targetY - sim.avatarPos.y;
+      if (Math.abs(totalDx) > 0.01 || Math.abs(totalDy) > 0.01) {
+        if (Math.abs(totalDx) >= Math.abs(totalDy)) {
+          sim.avatarFacing = totalDx >= 0 ? 'se' : 'nw';
+        } else {
+          sim.avatarFacing = totalDy >= 0 ? 'sw' : 'ne';
+        }
+      }
+
+      // If already standing on the target sofa/stool tile, sit immediately
+      if (sitTarget && startX === sitTarget.x && startY === sitTarget.y) {
+        sim.avatarPos = { x: sitTarget.x, y: sitTarget.y };
+        sim.avatarFacing = sitTarget.rotation;
+        sim.isAvatarSitting = true;
+        sim.pendingSitObject = null;
+        sim.pathQueue = [];
+        setSittingOnObjectId(sitTarget.id);
+        setAvatarDebugState({
+          x: sitTarget.x,
+          y: sitTarget.y,
+          facing: sitTarget.rotation,
+          walking: false,
+        });
+        pixelAudio.playSitOnSofa();
+        return;
+      }
+
+      const path = findPath(
+        { x: startX, y: startY },
+        { x: targetX, y: targetY },
+        sim.objects
+      );
+
+      if (path.length > 0) {
+        sim.pathQueue = path;
+        const firstStep = path[0];
+        const stepDx = firstStep.x - sim.avatarPos.x;
+        const stepDy = firstStep.y - sim.avatarPos.y;
+        if (Math.abs(stepDx) >= Math.abs(stepDy)) {
+          sim.avatarFacing = stepDx >= 0 ? 'se' : 'nw';
+        } else {
+          sim.avatarFacing = stepDy >= 0 ? 'sw' : 'ne';
+        }
+        setAvatarDebugState({
+          x: startX,
+          y: startY,
+          facing: sim.avatarFacing,
+          walking: true,
+        });
+      } else if (sitTarget) {
+        // Snap onto the sofa cushion if surrounded by furniture
+        sim.avatarPos = { x: sitTarget.x, y: sitTarget.y };
+        sim.avatarFacing = sitTarget.rotation;
+        sim.isAvatarSitting = true;
+        sim.pendingSitObject = null;
+        setSittingOnObjectId(sitTarget.id);
+        setAvatarDebugState({
+          x: sitTarget.x,
+          y: sitTarget.y,
+          facing: sitTarget.rotation,
+          walking: false,
+        });
+        pixelAudio.playSitOnSofa();
+      }
+    },
+    []
+  );
+
+  // Main 60Hz Canvas loop + ResizeObserver
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const updateDimensions = () => {
+      const rect = container.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const w = Math.max(320, Math.floor(rect.width));
+      const h = Math.max(480, Math.floor(rect.height));
+
+      canvas.width = w * dpr;
+      canvas.height = h * dpr;
+
+      const sim = simRef.current;
+      sim.canvasW = w;
+      sim.canvasH = h;
+
+      const scale = w < 700 ? Math.max(0.54, (w - 16) / 660) : 1;
+      const originX = Math.round(w / 2 / scale);
+      const roomTotalH = GRID_SIZE * TILE_HEIGHT;
+      const originY = Math.round((h / scale - roomTotalH) * 0.62);
+
+      sim.scale = scale;
+      sim.originX = originX;
+      sim.originY = originY;
+
+      setViewportMetrics((prev) =>
+        prev.originX === originX &&
+        prev.originY === originY &&
+        prev.scale === scale
+          ? prev
+          : { originX, originY, scale }
+      );
+    };
+
+    updateDimensions();
+    const ro = new ResizeObserver(updateDimensions);
+    ro.observe(container);
+
+    let rafId = 0;
+    let lastTime = performance.now();
+
+    const renderLoop = (now: number) => {
+      const rawDt = (now - lastTime) / 1000;
+      const dt = Math.min(rawDt, 0.05);
+      lastTime = now;
+
+      const sim = simRef.current;
+      sim.tick += 1;
+
+      // Advance avatar walking interpolation along path with 4-way facing (SE, SW, NW, NE)
+      if (sim.pathQueue.length > 0) {
+        const nextTile = sim.pathQueue[0];
+        const dx = nextTile.x - sim.avatarPos.x;
+        const dy = nextTile.y - sim.avatarPos.y;
+        const dist = Math.hypot(dx, dy);
+
+        // Update 4-way isometric facing so walking up-left (NW) or up-right (NE) shows Higma's back!
+        if (Math.abs(dx) > 0.02 || Math.abs(dy) > 0.02) {
+          if (Math.abs(dx) >= Math.abs(dy)) {
+            sim.avatarFacing = dx >= 0 ? 'se' : 'nw';
+          } else {
+            sim.avatarFacing = dy >= 0 ? 'sw' : 'ne';
+          }
+        }
+
+        const speed = 3.8; // Smooth tiles per second so walking leg animation is clearly visible
+        const step = speed * dt;
+        if (dist <= step) {
+          sim.avatarPos = { x: nextTile.x, y: nextTile.y };
+          sim.pathQueue.shift();
+          pixelAudio.playStep();
+
+          // Check if avatar finished path and should sit on a sofa/stool
+          if (sim.pathQueue.length === 0) {
+            const sitObj =
+              sim.pendingSitObject ||
+              findSittableObjectAtTile(
+                Math.round(sim.avatarPos.x),
+                Math.round(sim.avatarPos.y),
+                sim.objects
+              );
+            if (sitObj) {
+              sim.avatarPos = { x: sitObj.x, y: sitObj.y };
+              sim.avatarFacing = sitObj.rotation;
+              sim.isAvatarSitting = true;
+              sim.pendingSitObject = null;
+              setSittingOnObjectId(sitObj.id);
+              pixelAudio.playSitOnSofa();
+            }
+            setAvatarDebugState({
+              x: Math.round(sim.avatarPos.x),
+              y: Math.round(sim.avatarPos.y),
+              facing: sim.avatarFacing,
+              walking: false,
+            });
+          } else {
+            setAvatarDebugState({
+              x: Math.round(sim.avatarPos.x),
+              y: Math.round(sim.avatarPos.y),
+              facing: sim.avatarFacing,
+              walking: true,
+            });
+          }
+        } else {
+          sim.avatarPos = {
+            x: sim.avatarPos.x + (dx / dist) * step,
+            y: sim.avatarPos.y + (dy / dist) * step,
+          };
+        }
+      }
+
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const dpr = canvas.width / sim.canvasW;
+        ctx.save();
+        ctx.scale(dpr * sim.scale, dpr * sim.scale);
+        renderIsometricRoom({
+          ctx,
+          width: Math.ceil(sim.canvasW / sim.scale),
+          height: Math.ceil(sim.canvasH / sim.scale),
+          originX: sim.originX,
+          originY: sim.originY,
+          objects: sim.objects,
+          projects: sim.projects,
+          chatBubbles: sim.chatBubbles,
+          avatarPos: sim.avatarPos,
+          avatarFacing: sim.avatarFacing,
+          isAvatarWalking: sim.pathQueue.length > 0,
+          isAvatarSitting: sim.isAvatarSitting,
+          hoveredTile: sim.hoveredTile,
+          hoveredObjectId: sim.hoveredObjectId,
+          selectedObjectId: sim.selectedObjectId,
+          tick: sim.tick,
+          timeTheme: sim.timeTheme,
+          showGridOverlay: Boolean(sim.ghostObject),
+          ghostObject: sim.ghostObject,
+          hideStaticAnimals: true,
+          visitorAvatar: sim.visitorAvatar,
+        });
+        ctx.restore();
+      }
+
+      rafId = requestAnimationFrame(renderLoop);
+    };
+
+    rafId = requestAnimationFrame(renderLoop);
+    return () => {
+      cancelAnimationFrame(rafId);
+      ro.disconnect();
+    };
+  }, []);
+
+  // Keyboard navigation (WASD / Arrow keys + M to mute + R to rotate selected + Esc to close)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      if (e.key === 'Escape') {
+        setInspectedObjectState(null);
+        setActiveProject(null);
+        setIsConsoleModalOpen(false);
+        setIsPlaceOnClickActive(false);
+        simRef.current.selectedObjectId = null;
+        return;
+      }
+
+      if (e.key === 'm' || e.key === 'M') {
+        toggleMute();
+        return;
+      }
+
+      const sim = simRef.current;
+      const curX = Math.round(sim.avatarPos.x);
+      const curY = Math.round(sim.avatarPos.y);
+      let nx = curX;
+      let ny = curY;
+      let desiredFacing: IsometricRotation = sim.avatarFacing;
+
+      if (e.key === 'ArrowUp' || e.key === 'w' || e.key === 'W') {
+        ny -= 1;
+        desiredFacing = 'ne'; // Walking up-right shows Higma's back!
+      } else if (e.key === 'ArrowDown' || e.key === 's' || e.key === 'S') {
+        ny += 1;
+        desiredFacing = 'sw'; // Walking down-left shows Higma's front
+      } else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
+        nx -= 1;
+        desiredFacing = 'nw'; // Walking up-left shows Higma's back!
+      } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
+        nx += 1;
+        desiredFacing = 'se'; // Walking down-right shows Higma's front
+      } else {
+        return;
+      }
+
+      e.preventDefault();
+      // Always update facing immediately so pressing Up/Left shows Higma's back right away
+      sim.avatarFacing = desiredFacing;
+
+      const sitTarget = findSittableObjectAtTile(nx, ny, sim.objects);
+      if (isTileWalkable(nx, ny, sim.objects) || sitTarget) {
+        sim.isAvatarSitting = false;
+        sim.pendingSitObject = sitTarget;
+        setSittingOnObjectId(null);
+        sim.pathQueue = [{ x: nx, y: ny }];
+        setAvatarDebugState({
+          x: nx,
+          y: ny,
+          facing: desiredFacing,
+          walking: true,
+        });
+      } else {
+        setAvatarDebugState({
+          x: curX,
+          y: curY,
+          facing: desiredFacing,
+          walking: false,
+        });
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [toggleMute]);
+
+  // Convert pointer event to accurate room grid tile or hit-tested furniture object
+  const resolvePointerTarget = (clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { tile: null, obj: null };
+    const rect = canvas.getBoundingClientRect();
+    const sim = simRef.current;
+    const localX = (clientX - rect.left) / sim.scale;
+    const localY = (clientY - rect.top) / sim.scale;
+
+    // 1. Exact isometric floor tile under the pointer
+    const exactGrid = screenToGrid(localX, localY, sim.originX, sim.originY);
+    const validGrid = isWithinGrid(exactGrid.x, exactGrid.y) ? exactGrid : null;
+
+    // 2. If the admin is in "Place Furniture on Click" mode, prioritize the floor tile directly
+    if (
+      isAdminAuthenticated &&
+      isBuildDockOpen &&
+      isPlaceOnClickActive &&
+      validGrid
+    ) {
+      return { tile: validGrid, obj: null };
+    }
+
+    // 3. Check if the exact floor tile under the cursor has an object on it
+    if (validGrid) {
+      const sameTileObjs = sim.objects.filter(
+        (o) =>
+          o.x === validGrid.x &&
+          o.y === validGrid.y &&
+          o.type !== 'pet_dragon'
+      );
+      const nonRugSameTile = sameTileObjs.filter(
+        (o) => !o.type.startsWith('luxury_rug')
+      );
+      if (nonRugSameTile.length > 0) {
+        const topObj = nonRugSameTile.reduce(
+          (a, b) => (b.z >= a.z ? b : a),
+          nonRugSameTile[0]
+        );
+        return { tile: validGrid, obj: topObj };
+      }
+    }
+
+    // 4. Check tall/elevated sprites (wall screens, 3D YouTube TV, tall plants, stacked items) whose upper sprite extends above their base tile
+    const tallCandidates = [...sim.objects]
+      .filter(
+        (o) =>
+          o.type === 'youtube_tv' ||
+          o.type === 'neon_bulletin' ||
+          o.type === 'floating_screen' ||
+          o.type === 'admin_console' ||
+          o.type === 'potted_plant' ||
+          o.z > 0
+      )
+      .reverse();
+
+    for (const obj of tallCandidates) {
+      const { sx, sy } = gridToScreen(
+        obj.x,
+        obj.y,
+        obj.z,
+        sim.originX,
+        sim.originY
+      );
+      const boxTop = sy - 54;
+      const boxBottom = sy + 10;
+      const halfSpan = 24;
+
+      if (
+        localX >= sx - halfSpan &&
+        localX <= sx + halfSpan &&
+        localY >= boxTop &&
+        localY <= boxBottom
+      ) {
+        return { tile: { x: obj.x, y: obj.y }, obj };
+      }
+    }
+
+    // 5. If the exact floor tile only has a rug on it or is empty, return the floor tile for walking!
+    if (validGrid) {
+      return { tile: validGrid, obj: null };
+    }
+
+    return { tile: null, obj: null };
+  };
+
+  const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    const { tile, obj } = resolvePointerTarget(e.clientX, e.clientY);
+    const sim = simRef.current;
+    sim.hoveredTile = tile;
+    sim.hoveredObjectId = obj ? obj.id : null;
+    setHoveredGridTile((prev) => {
+      if (!tile && !prev) return null;
+      if (tile && prev && tile.x === prev.x && tile.y === prev.y) return prev;
+      return tile;
+    });
+  };
+
+  const handlePlaceFurnitureAtTile = (targetX: number, targetY: number) => {
+    if (!isAdminAuthenticated) return;
+    const brush = furniBrushRef.current;
+    const spec = OBJECT_CATALOG[brush.type];
+    const z = spec.defaultWalkable
+      ? 0
+      : getNextStackHeightAtTile(targetX, targetY, objects);
+
+    const created = addObject(
+      {
+        type: brush.type,
+        label: spec.name,
+        x: targetX,
+        y: targetY,
+        z,
+        rotation: brush.rotation,
+        colorVariant: brush.color,
+        customNote: INTERACTION_FLAVOR_TEXT[brush.type],
+      },
+      'replace'
+    );
+
+    simRef.current.selectedObjectId = created.id;
+    setInspectedObjectState(created);
+    setInteractionNoticeKey((k) => k + 1);
+    pushChatBubble(
+      'Higma',
+      `Placed ${spec.name} at (${targetX}, ${targetY})!`,
+      'system'
+    );
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    ensureAmbientMusicStarted();
+
+    const { tile, obj } = resolvePointerTarget(e.clientX, e.clientY);
+    if (!tile) return;
+
+    // If Admin is in Place Furniture mode, place the selected item onto the clicked grid tile
+    if (isAdminAuthenticated && isBuildDockOpen && isPlaceOnClickActive) {
+      handlePlaceFurnitureAtTile(tile.x, tile.y);
+      return;
+    }
+
+    if (!obj) {
+      const sitAtTile = findSittableObjectAtTile(
+        tile.x,
+        tile.y,
+        simRef.current.objects
+      );
+      walkAvatarTo(tile.x, tile.y, sitAtTile);
+      setInspectedObjectState(null);
+      simRef.current.selectedObjectId = null;
+      return;
+    }
+
+    simRef.current.selectedObjectId = obj.id;
+    setInspectedObjectState(obj);
+    setInteractionNoticeKey((k) => k + 1);
+
+    // 1. Sofa or Stool -> Walk to it and sit on it!
+    if (obj.type === 'white_sofa' || obj.type === 'wood_stool') {
+      walkAvatarTo(obj.x, obj.y, obj);
+      pushChatBubble(activeSpeakerName, '*sits down comfortably*', 'avatar');
+      return;
+    }
+
+    if (obj.type === 'youtube_tv' && obj.videoUrl) {
+      setRoomTvUrlDraft(obj.videoUrl);
+      setRoomTvUrlFeedback(null);
+    }
+
+    // Walk toward other clicked objects
+    walkAvatarTo(obj.x, obj.y, null);
+
+    // 2. Digital Pet Props
+    if (obj.type === 'pet_cat_basket') {
+      pushChatBubble('Milo', '*purrs* My basket is so warm!', 'cat');
+      return;
+    }
+    if (obj.type === 'water_bowl') {
+      pixelAudio.playStep();
+      pushChatBubble('Milo', '*laps up fresh water*', 'cat');
+      return;
+    }
+
+    // 3. Corner Control Console
+    if (obj.type === 'admin_console') {
+      pixelAudio.playConsoleClick();
+      return;
+    }
+
+    // 4. Project Screens or Other Interactive Furniture
+    pixelAudio.playConsoleClick();
+  };
+
+  // Resolve related project for the currently inspected object
+  const relatedProject: ProjectLink | null = inspectedObject
+    ? projects.find((p) => p.id === inspectedObject.projectId) ||
+      (inspectedObject.type === 'neon_bulletin' ||
+      inspectedObject.type === 'floating_screen'
+        ? projects[0] || null
+        : null)
+    : null;
+
+  const isInspectingSofa =
+    inspectedObject?.type === 'white_sofa' ||
+    inspectedObject?.type === 'wood_stool';
+
+  // Compute screen coordinates for the in-room floating Habbo pop-up above the clicked item
+  const inspectedScreenPos = inspectedObject
+    ? (() => {
+        const raw = gridToScreen(
+          inspectedObject.x,
+          inspectedObject.y,
+          inspectedObject.z,
+          viewportMetrics.originX,
+          viewportMetrics.originY
+        );
+        return {
+          x: Math.round(raw.sx * viewportMetrics.scale),
+          y: Math.round((raw.sy - 34) * viewportMetrics.scale),
+        };
+      })()
+    : null;
+
+  const renderTimePhaseIcon = () => {
+    switch (timeTheme.phase) {
+      case 'dawn':
+        return <Sunrise className="h-3 w-3 text-amber-300" />;
+      case 'day':
+        return <Sun className="h-3 w-3 text-yellow-300" />;
+      case 'sunset':
+        return <Sunset className="h-3 w-3 text-orange-300" />;
+      case 'night':
+      default:
+        return <Moon className="h-3 w-3 text-indigo-300" />;
+    }
+  };
+
+  return (
+    <main
+      data-testid="habbo-room-main"
+      data-time-phase={timeTheme.phase}
+      data-shadow-alpha={timeTheme.shadowAlpha}
+      data-avatar-pos={`${avatarDebugState.x},${avatarDebugState.y}`}
+      data-avatar-facing={avatarDebugState.facing}
+      data-avatar-walking={String(avatarDebugState.walking)}
+      data-visitor-avatar={useOwnerSkin ? 'Higma' : visitorAvatar.name}
+      style={{ background: timeTheme.backgroundGradient }}
+      className="relative h-screen w-screen overflow-hidden select-none transition-[background] duration-700"
+    >
+      {/* Full-Viewport Authentic Habbo Hotel Isometric Canvas */}
+      <div ref={containerRef} className="absolute inset-0 h-full w-full">
+        <canvas
+          ref={canvasRef}
+          data-testid="isometric-room-canvas"
+          aria-label="Isometric 2D Habbo Hotel pixel art portfolio room"
+          style={{ filter: timeTheme.roomDropShadowFilter }}
+          onPointerMove={handlePointerMove}
+          onClick={handleCanvasClick}
+          onDoubleClick={(e) => {
+            const { obj } = resolvePointerTarget(e.clientX, e.clientY);
+            if (obj?.type === 'admin_console' && isAdminAuthenticated) {
+              pixelAudio.playConsoleClick();
+              setIsConsoleModalOpen(true);
+            }
+          }}
+          className="block h-full w-full cursor-pointer transition-[filter] duration-700"
+        />
+
+        {/* Live 3D Isometric Skewed YouTube TV Screen Overlay (Exact 54x60 Window Size) */}
+        <IsometricYoutubeTvOverlay
+          objects={objects}
+          originX={viewportMetrics.originX}
+          originY={viewportMetrics.originY}
+          scale={viewportMetrics.scale}
+          onSelectTv={(tv) => {
+            simRef.current.selectedObjectId = tv.id;
+            setInspectedObjectState(tv);
+            setInteractionNoticeKey((k) => k + 1);
+            if (tv.videoUrl) {
+              setRoomTvUrlDraft(tv.videoUrl);
+            }
+            setRoomTvUrlFeedback(null);
+          }}
+        />
+
+        {/* All Active Animals Walking Randomly Across the Isometric Floor */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          {pets.map((petSpec) => (
+            <DigitalPet
+              key={petSpec.id}
+              id={petSpec.id}
+              name={petSpec.name}
+              species={petSpec.species}
+              randomWalk={true}
+              colorVariant={petSpec.colorVariant}
+              initialCoord={petSpec.initialCoord}
+              objects={objects}
+              originX={viewportMetrics.originX}
+              originY={viewportMetrics.originY}
+              scale={viewportMetrics.scale}
+              stepIntervalMs={petSpec.stepIntervalMs}
+              projectId={petSpec.projectId}
+              description={petSpec.description}
+              onInteract={(pet) => {
+                ensureAmbientMusicStarted();
+                walkAvatarTo(pet.coord.x, pet.coord.y, null);
+                pushChatBubble(
+                  pet.name,
+                  pet.emoteText,
+                  pet.species === 'cat'
+                    ? 'cat'
+                    : pet.species === 'dragon'
+                      ? 'dragon'
+                      : 'system'
+                );
+                setInteractionNoticeKey((k) => k + 1);
+                setInspectedObjectState({
+                  id: `patrol-${pet.id}`,
+                  type:
+                    pet.species === 'cat' ? 'pet_cat_basket' : 'pet_dragon',
+                  label: `${pet.name} (${
+                    pet.species === 'cat'
+                      ? 'Habbo Cat'
+                      : pet.species === 'dragon'
+                        ? 'Habbo Dragon'
+                        : 'Open-Hotel CameraBot'
+                  })`,
+                  x: pet.coord.x,
+                  y: pet.coord.y,
+                  z: 0,
+                  rotation: 'sw',
+                  walkable: true,
+                  projectId: pet.projectId,
+                  customNote: pet.description,
+                  createdAt: new Date().toISOString(),
+                });
+              }}
+            />
+          ))}
+        </div>
+
+        {/* Classic In-Room Floating Habbo Pop-Up Callout right above the clicked furniture item */}
+        <AnimatePresence>
+          {inspectedObject && inspectedScreenPos && (
+            <motion.div
+              key={`floating-popup-${inspectedObject.id}-${interactionNoticeKey}`}
+              data-testid="habbo-floating-item-popup"
+              initial={{ opacity: 0, y: 8, scale: 0.92 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={{ opacity: 0, y: 6, scale: 0.92 }}
+              transition={{ duration: 0.16 }}
+              style={{
+                left: Math.max(
+                  110,
+                  Math.min(
+                    (simRef.current.canvasW || 1200) - 110,
+                    inspectedScreenPos.x
+                  )
+                ),
+                top: Math.max(54, inspectedScreenPos.y - 36),
+              }}
+              className="pointer-events-none absolute z-20 -translate-x-1/2 -translate-y-full w-56 rounded-[4px] border-2 border-black bg-[#FFFBEB] px-2.5 py-1.5 text-black shadow-[3px_3px_0px_#000]"
+            >
+              <div className="flex items-center justify-between gap-1 border-b border-black/20 pb-0.5">
+                <span
+                  className="truncate text-[10px] font-bold text-[#1E3A8A]"
+                  style={{ fontFamily: '"Volter", var(--font-pixel), monospace' }}
+                >
+                  {inspectedObject.label}
+                </span>
+                <span className="shrink-0 rounded border border-black/40 bg-amber-200 px-1 text-[8px] font-bold uppercase">
+                  {inspectedObject.rotation.toUpperCase()}
+                </span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-[10px] leading-tight text-slate-800">
+                {inspectedObject.customNote ||
+                  INTERACTION_FLAVOR_TEXT[inspectedObject.type] ||
+                  OBJECT_CATALOG[inspectedObject.type]?.description}
+              </p>
+              {/* Classic Habbo Speech Pointer Triangle */}
+              <div className=" -bottom-1.5 left-1/2 -translate-x-1/2 absolute h-2.5 w-2.5 rotate-45 border-r-2 border-b-2 border-black bg-[#FFFBEB]" />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* Top-Right Habbo Pixel Time-of-Day, Sound & Ambient Music Controls */}
+      <div className="fixed top-3 right-3 z-20 flex items-center gap-1.5">
+        <button
+          type="button"
+          data-testid="time-of-day-button"
+          onClick={(e) => {
+            pixelAudio.playConsoleClick();
+            setPresetIndex((prev) => (prev + 1) % TIME_OVERRIDE_PRESETS.length);
+            e.currentTarget.blur();
+          }}
+          aria-label={`Time of Day: ${timeTheme.label}. Click to cycle lighting phase.`}
+          title={`Time of Day (${effectiveHour}:00 - ${timeTheme.label}) · Click to cycle lighting`}
+          className="flex h-7 items-center gap-1 border border-black bg-[#1E293B] px-2 text-[10px] font-bold text-slate-200 hover:bg-slate-700 transition-colors shadow-[2px_2px_0px_#000]"
+          style={{ fontFamily: '"Volter", var(--font-pixel), monospace' }}
+        >
+          {renderTimePhaseIcon()}
+          <span>
+            {activePreset.hour === null
+              ? `${String(effectiveHour).padStart(2, '0')}h·${timeTheme.phase.toUpperCase()}`
+              : activePreset.label}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            toggleAmbientMusic();
+            e.currentTarget.blur();
+          }}
+          aria-label={
+            isMusicPlaying
+              ? 'Pause Habbo ambient music'
+              : 'Play Habbo ambient music'
+          }
+          title={
+            isMusicPlaying
+              ? 'Ambient Lounge Music: ON'
+              : 'Ambient Lounge Music: OFF'
+          }
+          className={`flex h-7 items-center gap-1 border border-black px-2 text-[10px] font-bold transition-colors shadow-[2px_2px_0px_#000] ${
+            isMusicPlaying && !isMuted
+              ? 'bg-[#FACC15] text-black'
+              : 'bg-[#1E293B] text-slate-300 hover:bg-slate-700'
+          }`}
+          style={{ fontFamily: '"Volter", var(--font-pixel), monospace' }}
+        >
+          <Music className="h-3 w-3" />
+          <span>{isMusicPlaying && !isMuted ? 'BGM ON' : 'BGM'}</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={(e) => {
+            toggleMute();
+            e.currentTarget.blur();
+          }}
+          aria-label={isMuted ? 'Unmute sound effects' : 'Mute sound effects'}
+          title={isMuted ? 'Sound Muted (M)' : 'Sound Effects Active (M)'}
+          className="flex h-7 w-7 items-center justify-center border border-black bg-[#1E293B] text-slate-200 hover:bg-slate-700 transition-colors shadow-[2px_2px_0px_#000]"
+        >
+          {isMuted ? (
+            <VolumeX className="h-3.5 w-3.5 text-rose-400" />
+          ) : (
+            <Volume2 className="h-3.5 w-3.5 text-emerald-400" />
+          )}
+        </button>
+      </div>
+
+      {/* Top-Left Visitor Avatar Identity Bar + Admin-Only "Furni / Place Furniture" Dock */}
+      <div className="fixed top-3 left-3 z-30 flex flex-col items-start gap-2">
+        {/* Random Visitor Avatar Identity Card (Visible to everyone entering the room) */}
+        <div
+          data-testid="visitor-avatar-hud"
+          className="flex flex-wrap items-center gap-1.5 border border-black bg-[#1E293B] px-2.5 py-1 text-[10px] font-bold text-slate-100 shadow-[2px_2px_0px_#000]"
+          style={{ fontFamily: '"Volter", var(--font-pixel), monospace' }}
+        >
+          <span className="flex items-center gap-1">
+            <User className="h-3 w-3 text-amber-300" />
+            <span data-testid="visitor-avatar-name" className="text-amber-300">
+              {useOwnerSkin ? 'Higma (Owner)' : visitorAvatar.name}
+            </span>
+          </span>
+
+          {/* Color swatches of the generated random visitor avatar */}
+          {!useOwnerSkin && (
+            <span
+              aria-label="Visitor avatar colors"
+              className="inline-flex items-center gap-0.5 ml-0.5"
+            >
+              <span
+                className="inline-block h-2.5 w-2.5 border border-black"
+                style={{ backgroundColor: visitorAvatar.hairColor }}
+                title="Hair color"
+              />
+              <span
+                className="inline-block h-2.5 w-2.5 border border-black"
+                style={{ backgroundColor: visitorAvatar.shirtColor }}
+                title="Shirt color"
+              />
+              <span
+                className="inline-block h-2.5 w-2.5 border border-black"
+                style={{ backgroundColor: visitorAvatar.pantsColor }}
+                title="Pants color"
+              />
+            </span>
+          )}
+
+          <button
+            type="button"
+            data-testid="randomize-avatar-button"
+            onClick={() => {
+              const fresh = randomizeVisitorAvatar();
+              pushChatBubble(
+                fresh.name,
+                `*entered with a new random look (${fresh.accessory})!*`,
+                'avatar'
+              );
+            }}
+            title="Generate a new random visitor avatar"
+            className="inline-flex items-center gap-1 rounded-[2px] border border-black bg-[#00748C] px-1.5 py-0.5 text-[9px] font-bold text-white hover:bg-[#0089A6]"
+          >
+            <Shuffle className="h-2.5 w-2.5" />
+            <span>New Avatar</span>
+          </button>
+
+          {isAdminAuthenticated && (
+            <button
+              type="button"
+              data-testid="toggle-owner-skin-button"
+              onClick={toggleOwnerSkin}
+              title="Switch between Owner Higma skin and Random Visitor skin"
+              className="rounded-[2px] border border-black bg-[#4A4745] px-1.5 py-0.5 text-[9px] font-bold text-amber-200 hover:bg-slate-600"
+            >
+              {useOwnerSkin ? 'Visitor Skin' : 'Higma Skin'}
+            </button>
+          )}
+        </div>
+
+        {isAdminAuthenticated && (
+          <>
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                data-testid="room-build-dock-button"
+                onClick={() => {
+                  pixelAudio.playConsoleClick();
+                  setIsBuildDockOpen((prev) => {
+                    const next = !prev;
+                    setIsPlaceOnClickActive(next);
+                    return next;
+                  });
+                }}
+                className={`flex h-7 items-center gap-1.5 border border-black px-2.5 text-[10px] font-bold transition-colors shadow-[2px_2px_0px_#000] ${
+                  isBuildDockOpen
+                    ? 'bg-[#D4912A] text-white'
+                    : 'bg-[#1E293B] text-amber-300 hover:bg-slate-700'
+                }`}
+                style={{ fontFamily: '"Volter", var(--font-pixel), monospace' }}
+              >
+                <Hammer className="h-3 w-3" />
+                <span>{isBuildDockOpen ? 'Close Furni' : 'Furni / Place'}</span>
+              </button>
+
+              <Link
+                href="/admin"
+                className="flex h-7 items-center gap-1 border border-black bg-[#15803D] px-2.5 text-[10px] font-bold text-white hover:bg-[#16A34A] transition-colors shadow-[2px_2px_0px_#000]"
+                style={{ fontFamily: '"Volter", var(--font-pixel), monospace' }}
+              >
+                <span>Floor Studio (/admin)</span>
+              </Link>
+            </div>
+
+          <AnimatePresence>
+            {isBuildDockOpen && (
+              <motion.div
+                data-testid="room-furniture-dock"
+                initial={{ opacity: 0, y: -10, scale: 0.96 }}
+                animate={{ opacity: 1, y: 0, scale: 1 }}
+                exit={{ opacity: 0, y: -8, scale: 0.96 }}
+                transition={{ duration: 0.16 }}
+                className="w-[330px] sm:w-[366px] rounded-[5px] border-2 border-black bg-[#E2E2DE] text-[#1E1E1E] shadow-[4px_4px_0px_#000] overflow-hidden"
+              >
+                {/* Gold Habbo Header */}
+                <div className="flex items-center justify-between bg-[#D4912A] border-b-2 border-[#8C5A0E] px-2.5 py-1 text-white">
+                  <span
+                    className="text-[11px] font-bold drop-shadow-[0_1px_0_rgba(0,0,0,0.6)]"
+                    style={{
+                      fontFamily: '"Volter", var(--font-pixel), monospace',
+                    }}
+                  >
+                    Admin Furni · Place &amp; Manage Room
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsBuildDockOpen(false);
+                      setIsPlaceOnClickActive(false);
+                    }}
+                    aria-label="Close furniture dock"
+                    className="flex h-4 w-4 items-center justify-center rounded-[2px] border border-black bg-[#C93B2B] text-white hover:bg-red-600"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+
+                <div className="p-2 space-y-2">
+                  {/* Mode & 360° Rotation Bar */}
+                  <div className="flex items-center justify-between gap-1.5 rounded border border-[#8E8E8A] bg-[#D6D6D2] px-2 py-1">
+                    <button
+                      type="button"
+                      data-testid="room-place-mode-toggle"
+                      onClick={() => setIsPlaceOnClickActive((prev) => !prev)}
+                      className={`inline-flex items-center gap-1 rounded-[3px] border border-black px-2 py-0.5 text-[10px] font-bold ${
+                        isPlaceOnClickActive
+                          ? 'bg-[#00748C] text-white'
+                          : 'bg-white text-black hover:bg-amber-100'
+                      }`}
+                    >
+                      <MousePointerClick className="h-3 w-3" />
+                      <span>
+                        {isPlaceOnClickActive
+                          ? 'Click a Tile: ON'
+                          : 'Enable Grid Placement'}
+                      </span>
+                    </button>
+
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        data-testid="room-dock-rotate-360"
+                        onClick={() =>
+                          setSelectedFurniRotation((prev) => {
+                            const next = getNextRotation(prev, 1);
+                            furniBrushRef.current.rotation = next;
+                            return next;
+                          })
+                        }
+                        className="inline-flex items-center gap-1 rounded-[3px] border border-black bg-[#D49A2A] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#E5AA3A]"
+                        title="Rotate furniture 360° (SE, SW, NW, NE)"
+                      >
+                        <RotateCw className="h-3 w-3" />
+                        <span>{selectedFurniRotation.toUpperCase()}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Furniture Icon Grid */}
+                  <div className="grid grid-cols-5 gap-1 rounded border border-[#8E8E8A] bg-[#CCCCCC] p-1.5 max-h-[140px] overflow-y-auto">
+                    {QUICK_PLACEABLE_TYPES.map((type) => {
+                      const spec = OBJECT_CATALOG[type];
+                      const isSelected = selectedFurniType === type;
+                      return (
+                        <button
+                          key={type}
+                          type="button"
+                          data-testid={`room-furni-option-${type}`}
+                          onClick={() => {
+                            furniBrushRef.current = {
+                              type,
+                              rotation: furniBrushRef.current.rotation,
+                              color: spec.defaultColor,
+                            };
+                            setSelectedFurniType(type);
+                            setSelectedFurniColor(spec.defaultColor);
+                            setIsPlaceOnClickActive(true);
+                          }}
+                          title={spec.name}
+                          className={`flex flex-col items-center justify-center rounded-[3px] p-1 transition-all ${
+                            isSelected
+                              ? 'border-2 border-[#E59400] bg-white shadow'
+                              : 'border border-[#8E8E8A] bg-[#E2E2DE] hover:bg-white'
+                          }`}
+                        >
+                          <MiniFurniIcon
+                            type={type}
+                            colorVariant={
+                              isSelected
+                                ? selectedFurniColor
+                                : spec.defaultColor
+                            }
+                            projects={projects}
+                          />
+                          <span className="mt-0.5 w-full truncate text-center text-[8px] font-bold text-[#222222]">
+                            {spec.name.split(' ')[0]}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* Selected Item Description & Quick Place Button */}
+                  <div className="flex items-center justify-between gap-2 rounded border border-[#8E8E8A] bg-[#EEEEEE] px-2 py-1.5 text-[10px]">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-bold text-black truncate">
+                        {OBJECT_CATALOG[selectedFurniType].name} (
+                        {selectedFurniRotation.toUpperCase()})
+                      </div>
+                      <div className="truncate text-[9px] text-[#555555]">
+                        {isPlaceOnClickActive
+                          ? 'Click any floor tile to place this item!'
+                          : OBJECT_CATALOG[selectedFurniType].description}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="room-quick-place-btn"
+                      onClick={() => {
+                        const target = hoveredGridTile || { x: 4, y: 4 };
+                        handlePlaceFurnitureAtTile(target.x, target.y);
+                      }}
+                      className="shrink-0 rounded-[3px] border border-black bg-[#15803D] px-2.5 py-1 text-[10px] font-bold text-white hover:bg-[#16A34A]"
+                    >
+                      Place Here
+                    </button>
+                  </div>
+
+                  {/* Admin Active Animals Manager inside Dock */}
+                  <div className="rounded border border-[#8E8E8A] bg-[#D6D6D2] px-2 py-1.5 space-y-1">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="font-bold text-[#222222]">
+                        Active Animals ({pets.length})
+                      </span>
+                      <div className="flex items-center gap-1">
+                        {pets.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => clearAllPets()}
+                            className="rounded-[2px] border border-black bg-[#C93B2B] px-1.5 py-0.5 text-[9px] font-bold text-white hover:bg-red-600"
+                          >
+                            Remove All
+                          </button>
+                        )}
+                        {pets.length < 4 && (
+                          <button
+                            type="button"
+                            onClick={() => restoreDefaultPets()}
+                            className="rounded-[2px] border border-black bg-[#00748C] px-1.5 py-0.5 text-[9px] font-bold text-white hover:bg-[#0089A6]"
+                          >
+                            Restore Pets
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    {pets.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {pets.map((p) => (
+                          <button
+                            key={p.id}
+                            type="button"
+                            onClick={() => removePet(p.id)}
+                            title={`Remove ${p.name}`}
+                            className="inline-flex items-center gap-1 rounded-[2px] border border-black bg-white px-1.5 py-0.5 text-[9px] font-bold text-black hover:bg-red-100"
+                          >
+                            <span>{p.name}</span>
+                            <Trash2 className="h-2.5 w-2.5 text-[#C93B2B]" />
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-[9px] text-[#555555]">
+                        All animals removed from room.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+          </>
+        )}
+      </div>
+
+      {/* Classic Habbo Furniture Pop-Up Inspector Window (Bottom-Right) */}
+      <AnimatePresence mode="wait">
+        {inspectedObject && (
+          <motion.aside
+            key={`${inspectedObject.id}-${interactionNoticeKey}`}
+            data-testid="habbo-object-tooltip"
+            aria-label={`Selected object: ${inspectedObject.label}`}
+            initial={{ opacity: 0, y: 20, scale: 0.94 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 16, scale: 0.95 }}
+            transition={{ type: 'spring', stiffness: 360, damping: 26 }}
+            onMouseEnter={() => setIsTooltipHovered(true)}
+            onMouseLeave={() => setIsTooltipHovered(false)}
+            className="fixed right-3 bottom-3 z-30 w-72 sm:w-80 overflow-hidden border-2 border-black bg-[#E9E9E1] text-black shadow-[4px_4px_0px_#000]"
+          >
+            {/* Classic Habbo Window Title Bar */}
+            <div className="flex items-center justify-between border-b-2 border-black bg-[#3B6E8C] px-2.5 py-1 text-white">
+              <span
+                className="truncate text-[10px] font-bold tracking-wide"
+                style={{ fontFamily: '"Volter", var(--font-pixel), monospace' }}
+              >
+                {inspectedObject.label}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setInspectedObjectState(null);
+                  simRef.current.selectedObjectId = null;
+                }}
+                aria-label="Close object info"
+                className="flex h-4 w-4 items-center justify-center border border-black bg-[#D9534F] text-white hover:bg-red-600"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+
+            <div className="p-2.5 space-y-2 text-xs">
+              {/* Thumbnail + Category + Pop-up Description Header */}
+              <div className="flex items-start gap-2.5 border border-black/30 bg-[#F5F5EE] p-2">
+                <div className="flex h-11 w-11 shrink-0 items-center justify-center border border-black bg-[#D9D9CE]">
+                  <MiniFurniIcon
+                    type={inspectedObject.type}
+                    colorVariant={inspectedObject.colorVariant}
+                    projects={projects}
+                  />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-[10px] font-bold uppercase text-[#3B6E8C]">
+                      {OBJECT_CATALOG[inspectedObject.type]?.category || 'Furni'}
+                    </span>
+                    <span className="text-[10px] font-mono font-bold text-slate-600">
+                      ({inspectedObject.x},{inspectedObject.y}) ·{' '}
+                      {inspectedObject.rotation.toUpperCase()}
+                    </span>
+                  </div>
+                  <p
+                    data-testid="habbo-object-description"
+                    className="mt-0.5 text-[11px] leading-snug text-slate-800"
+                  >
+                    {inspectedObject.customNote ||
+                      INTERACTION_FLAVOR_TEXT[inspectedObject.type] ||
+                      OBJECT_CATALOG[inspectedObject.type]?.description ||
+                      'Interactive Habbo furniture item inside the isometric portfolio suite.'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Classic Habbo Interactive Furniture Controls (Visitor: Sit/Interact only; Admin: Rotate 360° & Pick Up any item) */}
+              {!inspectedObject.id.startsWith('patrol-') ? (
+                <div className="flex items-center justify-between gap-1.5 border border-black bg-[#D9D9CE] px-2 py-1.5">
+                  {isAdminAuthenticated && (
+                    <button
+                      type="button"
+                      data-testid="tooltip-rotate-360"
+                      onClick={() => {
+                        rotateObject(inspectedObject.id, 1);
+                        setInteractionNoticeKey((k) => k + 1);
+                      }}
+                      className="inline-flex items-center gap-1 border border-black bg-[#00748C] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#0089A6]"
+                      title="Rotate furniture 90° (Full 360°)"
+                    >
+                      <RotateCw className="h-3 w-3" />
+                      <span>
+                        Rotate ({inspectedObject.rotation.toUpperCase()})
+                      </span>
+                    </button>
+                  )}
+
+                  {isInspectingSofa ? (
+                    <button
+                      type="button"
+                      data-testid="tooltip-use-item"
+                      onClick={() => {
+                        const sim = simRef.current;
+                        sim.avatarPos = {
+                          x: inspectedObject.x,
+                          y: inspectedObject.y,
+                        };
+                        sim.avatarFacing = inspectedObject.rotation;
+                        sim.isAvatarSitting = true;
+                        sim.pathQueue = [];
+                        setSittingOnObjectId(inspectedObject.id);
+                        pixelAudio.playSitOnSofa();
+                      }}
+                      className="inline-flex items-center gap-1 border border-black bg-amber-300 px-2 py-0.5 text-[10px] font-bold text-black hover:bg-amber-200"
+                    >
+                      <Armchair className="h-3 w-3" />
+                      <span>
+                        {sittingOnObjectId === inspectedObject.id
+                          ? 'Seated'
+                          : 'Sit Here'}
+                      </span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      data-testid="tooltip-use-item"
+                      onClick={() => {
+                        walkAvatarTo(inspectedObject.x, inspectedObject.y, null);
+                        pushChatBubble(
+                          'Higma',
+                          `*inspects ${inspectedObject.label}*`,
+                          'avatar'
+                        );
+                      }}
+                      className="inline-flex items-center gap-1 border border-black bg-white px-2 py-0.5 text-[10px] font-bold text-black hover:bg-amber-100"
+                    >
+                      <span>Interact</span>
+                    </button>
+                  )}
+
+                  {isAdminAuthenticated && (
+                    <button
+                      type="button"
+                      data-testid="tooltip-pickup-item"
+                      onClick={() => {
+                        removeObject(inspectedObject.id);
+                        setInspectedObjectState(null);
+                        simRef.current.selectedObjectId = null;
+                      }}
+                      className="inline-flex items-center gap-1 border border-black bg-[#C93B2B] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-red-600"
+                      title="Remove furniture item"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      <span>Pick Up</span>
+                    </button>
+                  )}
+                </div>
+              ) : (
+                /* Roaming Animal Inspector Controls (Admin can remove the animal!) */
+                <div className="flex items-center justify-between gap-1.5 border border-black bg-[#D9D9CE] px-2 py-1.5">
+                  <button
+                    type="button"
+                    data-testid="tooltip-use-item"
+                    onClick={() => {
+                      walkAvatarTo(inspectedObject.x, inspectedObject.y, null);
+                      pushChatBubble(
+                        'Higma',
+                        `*pets ${inspectedObject.label}*`,
+                        'avatar'
+                      );
+                    }}
+                    className="inline-flex items-center gap-1 border border-black bg-white px-2 py-0.5 text-[10px] font-bold text-black hover:bg-amber-100"
+                  >
+                    <span>Pet Animal</span>
+                  </button>
+
+                  {isAdminAuthenticated && (
+                    <button
+                      type="button"
+                      data-testid="tooltip-remove-pet"
+                      onClick={() => {
+                        const rawPetId = inspectedObject.id.replace(
+                          /^patrol-/,
+                          ''
+                        );
+                        removePet(rawPetId);
+                        setInspectedObjectState(null);
+                        simRef.current.selectedObjectId = null;
+                      }}
+                      className="inline-flex items-center gap-1 border border-black bg-[#C93B2B] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-red-600"
+                      title="Remove this animal from the room"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                      <span>Remove Animal</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Admin Real-Time Scale & Rotation Sliders inside Inspector Tooltip */}
+              {isAdminAuthenticated &&
+                !inspectedObject.id.startsWith('patrol-') && (
+                  <div
+                    data-testid="tooltip-admin-transform-sliders"
+                    className="border border-black bg-[#D9D9CE] px-2 py-1.5 space-y-1 text-[10px]"
+                  >
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-11 font-bold text-slate-900">
+                        Scale:
+                      </span>
+                      <input
+                        type="range"
+                        min={MIN_OBJECT_SCALE}
+                        max={MAX_OBJECT_SCALE}
+                        step={0.05}
+                        value={clampObjectScale(inspectedObject.scale)}
+                        onChange={(e) =>
+                          updateObjectTransform(inspectedObject.id, {
+                            scale: Number(e.target.value),
+                          })
+                        }
+                        className="h-1.5 flex-1 accent-[#D97706] cursor-pointer"
+                      />
+                      <span className="w-9 text-right font-mono font-bold text-slate-900">
+                        {clampObjectScale(inspectedObject.scale).toFixed(2)}x
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <span className="w-11 font-bold text-slate-900">
+                        Rotate:
+                      </span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={359}
+                        step={1}
+                        value={normalizeRotationAngle(
+                          inspectedObject.rotationAngle,
+                          inspectedObject.rotation
+                        )}
+                        onChange={(e) => {
+                          const deg = normalizeRotationAngle(
+                            Number(e.target.value)
+                          );
+                          updateObjectTransform(inspectedObject.id, {
+                            rotation: angleToIsometricRotation(deg),
+                            rotationAngle: deg,
+                          });
+                        }}
+                        className="h-1.5 flex-1 accent-[#00748C] cursor-pointer"
+                      />
+                      <span className="w-9 text-right font-mono font-bold text-slate-900">
+                        {normalizeRotationAngle(
+                          inspectedObject.rotationAngle,
+                          inspectedObject.rotation
+                        )}
+                        °
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+              {/* 3D YouTube TV Inspector & Admin URL Programmer */}
+              {inspectedObject.type === 'youtube_tv' && (
+                <div
+                  data-testid="room-tv-inspector-panel"
+                  className="border border-black bg-[#F5F5EE] p-2 space-y-1.5"
+                >
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="inline-flex items-center gap-1 font-bold text-[#C93B2B]">
+                      <Tv className="h-3 w-3" />
+                      <span>
+                        3D YouTube Broadcast (
+                        {
+                          normalizeYouTubeEmbedUrl(inspectedObject.videoUrl)
+                            .videoId
+                        }
+                        )
+                      </span>
+                    </span>
+                    <a
+                      href={
+                        normalizeYouTubeEmbedUrl(inspectedObject.videoUrl)
+                          .watchUrl
+                      }
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-0.5 font-bold text-[#1E3A8A] hover:underline"
+                    >
+                      <span>YouTube</span>
+                      <ExternalLink className="h-2.5 w-2.5" />
+                    </a>
+                  </div>
+
+                  {/* Quick Playback & Volume Optimization Controls */}
+                  <div
+                    data-testid="room-tv-playback-controls"
+                    className="flex flex-wrap items-center justify-between gap-1.5 border border-black bg-[#18181B] px-2 py-1.5 text-white"
+                  >
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        data-testid="inspector-tv-seek-backward"
+                        onClick={() =>
+                          dispatchTvControlEvent({
+                            tvId: inspectedObject.id,
+                            action: 'seek',
+                            deltaSeconds: -10,
+                          })
+                        }
+                        className="inline-flex items-center gap-0.5 rounded-[2px] border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300 hover:bg-slate-700 hover:text-white cursor-pointer"
+                      >
+                        <RotateCcw className="h-2.5 w-2.5" />
+                        <span>-10s</span>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="inspector-tv-play-pause"
+                        onClick={() =>
+                          dispatchTvControlEvent({
+                            tvId: inspectedObject.id,
+                            action: 'togglePlay',
+                          })
+                        }
+                        className="inline-flex items-center gap-0.5 rounded-[2px] border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-amber-300 hover:bg-slate-700 hover:text-white cursor-pointer"
+                      >
+                        <span>Play/Pause</span>
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="inspector-tv-seek-forward"
+                        onClick={() =>
+                          dispatchTvControlEvent({
+                            tvId: inspectedObject.id,
+                            action: 'seek',
+                            deltaSeconds: 10,
+                          })
+                        }
+                        className="inline-flex items-center gap-0.5 rounded-[2px] border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-cyan-300 hover:bg-slate-700 hover:text-white cursor-pointer"
+                      >
+                        <span>+10s</span>
+                        <RotateCw className="h-2.5 w-2.5" />
+                      </button>
+                    </div>
+
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        data-testid="inspector-tv-mute-toggle"
+                        onClick={() =>
+                          dispatchTvControlEvent({
+                            tvId: inspectedObject.id,
+                            action: 'toggleMute',
+                          })
+                        }
+                        className="inline-flex items-center gap-0.5 rounded-[2px] border border-slate-600 bg-slate-800 px-1.5 py-0.5 text-[10px] font-bold text-emerald-300 hover:bg-slate-700 cursor-pointer"
+                      >
+                        <Volume2 className="h-2.5 w-2.5" />
+                        <span>Audio</span>
+                      </button>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={5}
+                        defaultValue={80}
+                        data-testid="inspector-tv-volume-slider"
+                        aria-label="Optimize TV Volume"
+                        onChange={(e) =>
+                          dispatchTvControlEvent({
+                            tvId: inspectedObject.id,
+                            action: 'volume',
+                            volume: Number(e.target.value),
+                          })
+                        }
+                        className="h-1.5 w-16 accent-amber-400 cursor-pointer"
+                      />
+                    </div>
+                  </div>
+
+                  {isAdminAuthenticated ? (
+                    <form
+                      onSubmit={(e) => {
+                        e.preventDefault();
+                        const vidId = extractYouTubeVideoId(roomTvUrlDraft);
+                        if (!vidId) {
+                          setRoomTvUrlFeedback(
+                            'Please enter a valid YouTube link or 11-char ID.'
+                          );
+                          return;
+                        }
+                        const canonical = `https://www.youtube.com/watch?v=${vidId}`;
+                        updateObjectVideoUrl(inspectedObject.id, canonical);
+                        setRoomTvUrlDraft(canonical);
+                        setRoomTvUrlFeedback(
+                          `Broadcasting (${vidId}) to all visitors!`
+                        );
+                        pushChatBubble(
+                          activeSpeakerName,
+                          `Changed 3D TV channel to YouTube (${vidId})!`,
+                          'system'
+                        );
+                      }}
+                      className="space-y-1"
+                    >
+                      <div className="flex items-center gap-1">
+                        <input
+                          type="text"
+                          data-testid="room-tv-url-input"
+                          value={roomTvUrlDraft}
+                          onChange={(e) => {
+                            setRoomTvUrlDraft(e.target.value);
+                            setRoomTvUrlFeedback(null);
+                          }}
+                          placeholder="Paste YouTube URL..."
+                          className="flex-1 min-w-0 border border-black bg-white px-1.5 py-1 text-[10px] text-black focus:outline-none"
+                        />
+                        <button
+                          type="submit"
+                          data-testid="room-tv-url-submit"
+                          className="shrink-0 border border-black bg-[#C93B2B] px-2 py-1 text-[10px] font-bold text-white hover:bg-red-700"
+                        >
+                          Program TV
+                        </button>
+                      </div>
+                      {roomTvUrlFeedback && (
+                        <div
+                          data-testid="room-tv-url-feedback"
+                          className="text-[9px] font-bold text-emerald-800"
+                        >
+                          {roomTvUrlFeedback}
+                        </div>
+                      )}
+                    </form>
+                  ) : (
+                    <div className="text-[10px] text-slate-700">
+                      Synced live with the room owner&apos;s broadcast.
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Secret Console Controls (Admin-only quick spawn; discreet Owner Key link to /admin) */}
+              {inspectedObject.type === 'admin_console' && (
+                <div className="flex items-center justify-between gap-1.5 border border-black bg-[#D9D9CE] p-1.5">
+                  {isAdminAuthenticated ? (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          addObject({
+                            type: 'glass_bottle',
+                            label: 'Console Glass Bottle',
+                            x: 4,
+                            y: 5,
+                            colorVariant: '#34d399',
+                          });
+                        }}
+                        className="inline-flex items-center gap-1 border border-black bg-emerald-300 px-1.5 py-0.5 text-[10px] font-bold text-black hover:bg-emerald-200"
+                      >
+                        <Plus className="h-2.5 w-2.5" />
+                        <span>Bottle</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          addObject({
+                            type: 'building_block',
+                            label: 'Console Building Block',
+                            x: 5,
+                            y: 4,
+                            colorVariant: '#f59e0b',
+                          });
+                        }}
+                        className="inline-flex items-center gap-1 border border-black bg-amber-300 px-1.5 py-0.5 text-[10px] font-bold text-black hover:bg-amber-200"
+                      >
+                        <Plus className="h-2.5 w-2.5" />
+                        <span>Block</span>
+                      </button>
+                    </div>
+                  ) : (
+                    <span className="text-[10px] font-medium text-slate-700">
+                      Owner Terminal (Admin Only)
+                    </span>
+                  )}
+
+                  {/* Discreet Secret Owner Key to /admin */}
+                  <div className="flex items-center gap-1">
+                    {isAdminAuthenticated && (
+                      <button
+                        type="button"
+                        onClick={() => setIsConsoleModalOpen(true)}
+                        className="border border-black bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold hover:bg-white"
+                      >
+                        Deck
+                      </button>
+                    )}
+                    <Link
+                      href="/admin"
+                      title="Secret Room Owner Console"
+                      aria-label="Secret Room Owner Console"
+                      className="flex h-5 w-5 items-center justify-center border border-black bg-slate-800 text-amber-300 hover:bg-black"
+                    >
+                      <KeyRound className="h-3 w-3" />
+                    </Link>
+                  </div>
+                </div>
+              )}
+
+              {/* Related Project Link Action */}
+              {relatedProject && (
+                <div className="border border-black bg-white p-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+                        Related Project
+                      </div>
+                      <div className="truncate text-xs font-bold text-slate-950">
+                        {relatedProject.title}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          pixelAudio.playLinkOpen();
+                          setActiveProject({
+                            project: relatedProject,
+                            screenObj: inspectedObject,
+                          });
+                        }}
+                        className="inline-flex items-center gap-1 border border-black bg-[#FACC15] px-2 py-1 text-[10px] font-bold text-black hover:bg-amber-300"
+                      >
+                        <Sparkles className="h-3 w-3" />
+                        <span>Details</span>
+                      </button>
+                      <a
+                        href={relatedProject.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => pixelAudio.playLinkOpen()}
+                        className="inline-flex items-center gap-1 border border-black bg-[#3B6E8C] px-2 py-1 text-[10px] font-bold text-white hover:bg-[#2c546b]"
+                      >
+                        <span>Visit</span>
+                        <ExternalLink className="h-3 w-3" />
+                      </a>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Auto-dismiss countdown progress bar */}
+            {!isTooltipHovered && (
+              <div className="h-1 w-full bg-[#D9D9CE] border-t border-black/30 overflow-hidden">
+                <motion.div
+                  key={`timer-${inspectedObject.id}-${interactionNoticeKey}`}
+                  initial={{ width: '100%' }}
+                  animate={{ width: '0%' }}
+                  transition={{
+                    duration: NOTIFICATION_AUTO_DISMISS_MS / 1000,
+                    ease: 'linear',
+                  }}
+                  className="h-full bg-[#3B6E8C]"
+                />
+              </div>
+            )}
+          </motion.aside>
+        )}
+      </AnimatePresence>
+
+      {/* Optional Project Details Modal */}
+      <ProjectModal
+        project={activeProject?.project || null}
+        screenObject={activeProject?.screenObj || null}
+        onClose={() => setActiveProject(null)}
+        onWalkToScreen={(x, y) => walkAvatarTo(x, y)}
+      />
+
+      {/* Secret Corner Admin Control Console Modal */}
+      <AdminConsoleModal
+        isOpen={isConsoleModalOpen}
+        objects={objects}
+        onClose={() => setIsConsoleModalOpen(false)}
+        onQuickSpawnBottle={(x, y) => {
+          addObject({
+            type: 'glass_bottle',
+            label: 'Console Glass Bottle',
+            x,
+            y,
+            colorVariant: '#34d399',
+          });
+          pushChatBubble(
+            'Higma',
+            `Spawned Glass Bottle at (${x}, ${y})!`,
+            'system'
+          );
+        }}
+        onQuickSpawnBlock={(x, y) => {
+          addObject({
+            type: 'building_block',
+            label: 'Console Building Block',
+            x,
+            y,
+            colorVariant: '#f59e0b',
+          });
+          pushChatBubble(
+            'Higma',
+            `Stacked Building Block at (${x}, ${y})!`,
+            'system'
+          );
+        }}
+        onResetRoom={() => {
+          resetRoomToDefault();
+          pushChatBubble(
+            'Higma',
+            'Room layout restored to default clutter!',
+            'system'
+          );
+        }}
+      />
+    </main>
+  );
+}

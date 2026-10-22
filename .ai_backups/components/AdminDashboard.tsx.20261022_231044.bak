@@ -1,0 +1,2792 @@
+'use client';
+
+import React, { useState, useEffect, useRef } from 'react';
+import Link from 'next/link';
+import {
+  Lock,
+  Unlock,
+  RotateCw,
+  ArrowUp,
+  ArrowDown,
+  ArrowLeft,
+  ArrowRight,
+  Trash2,
+  Wand2,
+  RotateCcw,
+  Eraser,
+  X,
+  Pencil,
+  Tv,
+  Package,
+  Layers,
+  Plus,
+  Minus,
+  ChevronUp,
+  ChevronDown,
+  Maximize2,
+  Sliders,
+  Image as ImageIcon,
+  Upload,
+} from 'lucide-react';
+import {
+  GRID_SIZE,
+  OBJECT_CATALOG,
+  DEFAULT_YOUTUBE_VIDEO_URL,
+  RoomObjectType,
+  ProjectLink,
+  GridCoord,
+  IsometricRotation,
+  DragFurniturePayload,
+  PlacementMode,
+  InventoryItem,
+  clampObjectScale,
+  normalizeRotationAngle,
+  angleToIsometricRotation,
+  rotationToAngle,
+  getNextRotation,
+  getNextStackHeightAtTile,
+  verifyAdminPasscode,
+  serializeDragFurniturePayload,
+  parseDragFurniturePayload,
+  resolveCanvasDropTile,
+  getTopObjectAtTile,
+  extractYouTubeVideoId,
+  normalizeYouTubeEmbedUrl,
+  MIN_OBJECT_SCALE,
+  MAX_OBJECT_SCALE,
+  DEFAULT_POSTER_IMAGES,
+  isWallPosterType,
+} from '@/lib/room-engine';
+import {
+  renderIsometricRoom,
+  renderBuilderPreviewBox,
+  renderFurniSlotThumbnail,
+  getObjectTransformGizmoScreenCoords,
+} from '@/lib/isometric-painter';
+import { loadHabboSpriteAtlas } from '@/lib/habbo-sprites';
+import { useRoomStore, pixelAudio } from '@/lib/use-room-store';
+import IsometricYoutubeTvOverlay from './IsometricYoutubeTvOverlay';
+import IsometricWallPostersOverlay from './IsometricWallPostersOverlay';
+
+type BcCategoryFilter =
+  | 'all'
+  | 'wall_posters'
+  | 'blocks_bottles'
+  | 'seating'
+  | 'rugs'
+  | 'tables'
+  | 'plants'
+  | 'pets_crowns'
+  | 'screens';
+
+const BC_CATEGORIES: Array<{
+  id: BcCategoryFilter;
+  label: string;
+  iconColor: string;
+  types?: RoomObjectType[];
+}> = [
+  {
+    id: 'all',
+    label: 'Essentials',
+    iconColor: '#EF4444',
+  },
+  {
+    id: 'wall_posters',
+    label: 'Wall Posters',
+    iconColor: '#16A34A',
+    types: ['poster_raja_gb05', 'poster_wydad_winners', 'poster_chelsea'],
+  },
+  {
+    id: 'blocks_bottles',
+    label: 'Blocks, Bottles & Lights',
+    iconColor: '#F59E0B',
+    types: [
+      'building_block',
+      'glass_bottle',
+      'habbo_candle',
+      'gold_spotlight',
+    ],
+  },
+  {
+    id: 'rugs',
+    label: 'Rugs',
+    iconColor: '#84CC16',
+    types: ['luxury_rug_pink', 'luxury_rug_blue', 'luxury_rug_gold'],
+  },
+  {
+    id: 'seating',
+    label: 'Chairs & Sofas',
+    iconColor: '#F472B6',
+    types: ['white_sofa', 'wood_stool'],
+  },
+  {
+    id: 'tables',
+    label: 'Tables',
+    iconColor: '#D97706',
+    types: ['wood_table'],
+  },
+  {
+    id: 'plants',
+    label: 'Plants',
+    iconColor: '#22C55E',
+    types: ['potted_plant'],
+  },
+  {
+    id: 'pets_crowns',
+    label: 'Pets & Crowns',
+    iconColor: '#A855F7',
+    types: [
+      'pet_dragon',
+      'pet_cat_basket',
+      'water_bowl',
+      'royal_crown_gold',
+      'royal_crown_purple',
+    ],
+  },
+  {
+    id: 'screens',
+    label: 'Screens & 3D TV',
+    iconColor: '#38BDF8',
+    types: ['youtube_tv', 'neon_bulletin', 'floating_screen', 'admin_console'],
+  },
+];
+
+const HABBO_ENGLISH_NAMES: Record<RoomObjectType, string> = {
+  youtube_tv: '3D YouTube TV',
+  building_block: 'Digital Block',
+  glass_bottle: 'Pixel Elixir Bottle',
+  white_sofa: 'White Club Sofa',
+  luxury_rug_pink: 'Woven Rose Rug',
+  luxury_rug_blue: 'Sky Blue Rug',
+  luxury_rug_gold: 'Imperial Gold Rug',
+  wood_table: 'Mahogany Lounge Table',
+  wood_stool: 'Bistro Bar Stool',
+  potted_plant: 'Twisted Bamboo Plant',
+  royal_crown_gold: 'Golden Sovereign Crown',
+  royal_crown_purple: 'Amethyst Crown Bust',
+  pet_dragon: 'Draco the Dragon',
+  pet_cat_basket: 'Sleeping Cat (Basket)',
+  water_bowl: 'Water & Salmon Bowl',
+  neon_bulletin: 'Wall Project Screen',
+  floating_screen: 'Holo Project Monitor',
+  admin_console: 'Control Console',
+  poster_chelsea: 'Chelsea FC #20 Poster',
+  poster_raja_gb05: 'Ultras Green Boys 05 Poster',
+  poster_wydad_winners: 'Wydad & Winners Poster',
+  gold_spotlight: 'Gold Stage Spotlight',
+  habbo_candle: 'Flickering Candelabra',
+};
+
+// Classic 52-color Habbo Builders' Club Palette matching reference image_b38e0cb6.png
+const HABBO_BC_PALETTE: string[] = [
+  // Row 1: Whites, Cyans, Greys, Creams
+  '#FFFFFF', '#99F6E4', '#2DD4BF', '#00E5FF', '#BAE6FD', '#E2E8F0', '#94A3B8', '#FED7AA', '#FDE68A', '#FEF08A', '#FDE047',
+  // Row 2: Yellows & Greens
+  '#FACC15', '#EAB308', '#A3E635', '#84CC16', '#4ADE80', '#6EE7B7', '#34D399', '#10B981', '#22C55E', '#16A34A', '#15803D',
+  // Row 3: Deep Greens, Teals, Slates, Sky Blues
+  '#166534', '#3F6212', '#365314', '#14532D', '#115E59', '#1E3A8A', '#475569', '#64748B', '#06B6D4', '#38BDF8', '#0284C7',
+  // Row 4: Lavenders, Pinks, Corals, Oranges, Golds
+  '#C7D2FE', '#DDD6FE', '#FBCFE8', '#F9A8D4', '#FDA4AF', '#FB923C', '#EA580C', '#F97316', '#F59E0B', '#D97706', '#B45309',
+  // Row 5: Browns, Crimsons, Magentas, Purples, Blues
+  '#78350F', '#713F12', '#7C2D12', '#7F1D1D', '#991B1B', '#E11D48', '#EC4899', '#F472B6', '#A855F7', '#818CF8', '#2563EB',
+  // Row 6: Deep Indigos & Violets
+  '#1D4ED8', '#A78BFA', '#E879F9', '#D946EF', '#9333EA', '#7E22CE', '#3730A3', '#4F46E5', '#1E40AF',
+];
+
+const LOGICAL_CANVAS_W = 760;
+const LOGICAL_CANVAS_H = 500;
+const LOGICAL_ORIGIN_X = 380;
+const LOGICAL_ORIGIN_Y = 175;
+
+function FurniSlotThumbnail({
+  type,
+  colorVariant,
+  projects,
+  spritesReady,
+}: {
+  type: RoomObjectType;
+  colorVariant: string;
+  projects: ProjectLink[];
+  spritesReady: boolean;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    renderFurniSlotThumbnail({
+      ctx,
+      width: canvas.width,
+      height: canvas.height,
+      type,
+      colorVariant,
+      projects,
+    });
+  }, [type, colorVariant, projects, spritesReady]);
+
+  return (
+    <canvas
+      ref={canvasRef}
+      width={34}
+      height={34}
+      className="h-[30px] w-[30px] pointer-events-none block"
+      style={{ imageRendering: 'pixelated' }}
+    />
+  );
+}
+
+export default function AdminDashboard() {
+  const {
+    objects,
+    projects,
+    pets,
+    inventory,
+    inventoryStack,
+    roomSettings,
+    lastSavedAt,
+    isSaving,
+    isLoaded,
+    isAdminAuthenticated,
+    addObject,
+    moveObject,
+    removeObject,
+    removePet,
+    clearAllPets,
+    restoreDefaultPets,
+    updateObjectZ,
+    rotateObject,
+    updateObjectTransform,
+    addInventoryItem,
+    removeInventoryItem,
+    updateInventoryItemTransform,
+    pickupObjectToInventory,
+    pushToInventoryStack,
+    removeFromInventoryStack,
+    reorderInventoryStack,
+    clearInventoryStack,
+    placeInventoryStackAtTile,
+    resetInventoryToDefault,
+    updateRoomSettings,
+    updateObjectVideoUrl,
+    resetRoomToDefault,
+    applyOrganizedPreset,
+    clearFloorToMinimal,
+    loginAdmin,
+    logoutAdmin,
+  } = useRoomStore();
+
+  // --- Secret Owner Auth Gate State ---
+  const [passcodeInput, setPasscodeInput] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [spritesReady, setSpritesReady] = useState(false);
+
+  // --- Builders' Club Window State ---
+  const [bcCategory, setBcCategory] = useState<BcCategoryFilter>('all');
+  const [sidebarSearch, setSidebarSearch] = useState('');
+  const [activeDragPayload, setActiveDragPayload] =
+    useState<DragFurniturePayload | null>(null);
+  const [dropHoverTile, setDropHoverTile] = useState<GridCoord | null>(null);
+  const [canvasHoverTile, setCanvasHoverTile] = useState<GridCoord | null>(null);
+
+  // Placement settings
+  const [placementMode, setPlacementMode] = useState<PlacementMode>('replace');
+  const [clickToPlaceMode, setClickToPlaceMode] = useState<boolean>(true);
+  const [showGridOverlay, setShowGridOverlay] = useState<boolean>(true);
+
+  // Inventory, Pre-Placement Stack & Room Architecture Mode State
+  const [warehouseTab, setWarehouseTab] = useState<
+    'inventory' | 'stack' | 'architecture'
+  >('inventory');
+  const [selectedInventoryItemId, setSelectedInventoryItemId] = useState<
+    string | null
+  >(null);
+  const [useStackBrush, setUseStackBrush] = useState<boolean>(false);
+
+  // Selected furniture item in the Builders' Club catalog / inventory
+  const [selectedType, setSelectedType] = useState<RoomObjectType>('youtube_tv');
+  const [objectLabel, setObjectLabel] = useState(
+    HABBO_ENGLISH_NAMES['youtube_tv']
+  );
+  const [coordX, setCoordX] = useState<number>(5);
+  const [coordY, setCoordY] = useState<number>(0);
+  const [coordZ, setCoordZ] = useState<number>(0);
+  const [rotation, setRotation] = useState<IsometricRotation>('se');
+  const [rotationAngle, setRotationAngle] = useState<number>(0);
+  const [objectScale, setObjectScale] = useState<number>(1);
+  const [colorVariant, setColorVariant] = useState<string>('#EF4444');
+  const [linkedProjectId] = useState<string>('proj-pixel-engine');
+  const [tvVideoUrlInput, setTvVideoUrlInput] = useState<string>(
+    DEFAULT_YOUTUBE_VIDEO_URL
+  );
+  const [tvUrlError, setTvUrlError] = useState<string | null>(null);
+  const [posterImageUrlInput, setPosterImageUrlInput] = useState<string>('');
+  const [selectedPlacedObjectId, setSelectedPlacedObjectId] = useState<
+    string | null
+  >(null);
+  const [gizmoDragState, setGizmoDragState] = useState<{
+    mode: 'scale' | 'rotate';
+    objectId: string;
+    startClientX: number;
+    startClientY: number;
+    initialScale: number;
+    centerClientX: number;
+    centerClientY: number;
+  } | null>(null);
+  const [statusToast, setStatusToast] = useState<string | null>(null);
+
+  // Canvas refs: 1) Main room on right, 2) 3D Builders' Club preview box on left
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const builderPreviewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [canvasDisplayScale, setCanvasDisplayScale] = useState<number>(1);
+
+  useEffect(() => {
+    loadHabboSpriteAtlas().then(() => {
+      setSpritesReady(true);
+    });
+  }, []);
+
+  // Auto-dismiss status toast after 3.2 seconds
+  useEffect(() => {
+    if (!statusToast) return;
+    const timer = setTimeout(() => setStatusToast(null), 3200);
+    return () => clearTimeout(timer);
+  }, [statusToast]);
+
+  const handleSelectObjectType = (type: RoomObjectType) => {
+    setSelectedType(type);
+    setSelectedInventoryItemId(null);
+    setUseStackBrush(false);
+    const spec = OBJECT_CATALOG[type];
+    setObjectLabel(HABBO_ENGLISH_NAMES[type] || spec.name);
+    setColorVariant(spec.defaultColor);
+    if (isWallPosterType(type)) {
+      setPosterImageUrlInput(
+        DEFAULT_POSTER_IMAGES[type as keyof typeof DEFAULT_POSTER_IMAGES]
+      );
+    }
+    const nextZ =
+      placementMode === 'replace' || spec.defaultWalkable
+        ? 0
+        : getNextStackHeightAtTile(coordX, coordY, objects);
+    setCoordZ(nextZ);
+  };
+
+  const handleSelectInventoryItem = (item: InventoryItem) => {
+    setSelectedInventoryItemId(item.id);
+    setSelectedType(item.type);
+    setUseStackBrush(false);
+    setObjectLabel(item.label || HABBO_ENGLISH_NAMES[item.type]);
+    setColorVariant(item.colorVariant);
+    setRotation(item.defaultRotation);
+    setRotationAngle(
+      normalizeRotationAngle(item.defaultRotationAngle, item.defaultRotation)
+    );
+    setObjectScale(clampObjectScale(item.defaultScale));
+    const spec = OBJECT_CATALOG[item.type];
+    const nextZ =
+      placementMode === 'replace' || spec.defaultWalkable
+        ? 0
+        : getNextStackHeightAtTile(coordX, coordY, objects);
+    setCoordZ(nextZ);
+  };
+
+  useEffect(() => {
+    const spec = OBJECT_CATALOG[selectedType];
+    if (placementMode === 'replace' || spec.defaultWalkable) {
+      setCoordZ(0);
+    } else {
+      setCoordZ(getNextStackHeightAtTile(coordX, coordY, objects));
+    }
+  }, [coordX, coordY, objects, selectedType, placementMode]);
+
+  // Render the miniature 3D isometric preview inside the Builders' Club dialog
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+    const canvas = builderPreviewCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    renderBuilderPreviewBox({
+      ctx,
+      width: canvas.width,
+      height: canvas.height,
+      type: selectedType,
+      rotation,
+      rotationAngle,
+      scale: objectScale,
+      colorVariant,
+      projects,
+      stackLayers:
+        useStackBrush && inventoryStack.length > 0 ? inventoryStack : undefined,
+    });
+  }, [
+    isAdminAuthenticated,
+    spritesReady,
+    selectedType,
+    rotation,
+    rotationAngle,
+    objectScale,
+    colorVariant,
+    projects,
+    useStackBrush,
+    inventoryStack,
+  ]);
+
+  const activePreviewTile = dropHoverTile || canvasHoverTile;
+  const activeBrushType = activeDragPayload?.type || selectedType;
+  const activeBrushSpec = OBJECT_CATALOG[activeBrushType];
+  const previewZ = activePreviewTile
+    ? placementMode === 'replace' || activeBrushSpec.defaultWalkable
+      ? 0
+      : getNextStackHeightAtTile(
+          activePreviewTile.x,
+          activePreviewTile.y,
+          objects
+        )
+    : coordZ;
+
+  const activeGridSize = roomSettings.gridSize || GRID_SIZE;
+  const dynamicCanvasW = Math.max(LOGICAL_CANVAS_W, activeGridSize * 68 + 80);
+  const dynamicCanvasH = Math.max(LOGICAL_CANVAS_H, activeGridSize * 36 + 160);
+  const dynamicOriginX = Math.round(dynamicCanvasW / 2);
+  const dynamicOriginY = LOGICAL_ORIGIN_Y;
+
+  // Render the live interactive isometric room on the right side
+  useEffect(() => {
+    if (!isAdminAuthenticated) return;
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    canvas.width = dynamicCanvasW;
+    canvas.height = dynamicCanvasH;
+
+    const shouldShowGhost =
+      Boolean(activeDragPayload && activePreviewTile) ||
+      Boolean(clickToPlaceMode && activePreviewTile);
+
+    const ghostObject =
+      shouldShowGhost && activePreviewTile
+        ? {
+            type: activeDragPayload?.type || selectedType,
+            label: activeDragPayload?.label || objectLabel,
+            x: activePreviewTile.x,
+            y: activePreviewTile.y,
+            z: previewZ,
+            rotation: activeDragPayload?.rotation || rotation,
+            rotationAngle: activeDragPayload?.rotationAngle ?? rotationAngle,
+            scale: activeDragPayload?.scale ?? objectScale,
+            colorVariant: activeDragPayload?.colorVariant || colorVariant,
+            projectId: activeDragPayload?.projectId || linkedProjectId,
+            stackLayers:
+              useStackBrush && inventoryStack.length > 0
+                ? inventoryStack
+                : undefined,
+          }
+        : null;
+
+    ctx.save();
+    renderIsometricRoom({
+      ctx,
+      width: dynamicCanvasW,
+      height: dynamicCanvasH,
+      originX: dynamicOriginX,
+      originY: dynamicOriginY,
+      objects,
+      projects,
+      chatBubbles: [],
+      avatarPos: { x: 4, y: 5 },
+      avatarFacing: 'se',
+      isAvatarWalking: false,
+      hoveredTile: activePreviewTile,
+      selectedTile: { x: coordX, y: coordY },
+      hoveredObjectId: null,
+      selectedObjectId: selectedPlacedObjectId,
+      tick: 12,
+      showGridOverlay,
+      ghostObject,
+      hideStaticAnimals: pets.length === 0,
+      roomSettings,
+    });
+    ctx.restore();
+  }, [
+    isAdminAuthenticated,
+    spritesReady,
+    objects,
+    roomSettings,
+    dynamicCanvasW,
+    dynamicCanvasH,
+    dynamicOriginX,
+    dynamicOriginY,
+    projects,
+    pets.length,
+    coordX,
+    coordY,
+    activePreviewTile,
+    activeDragPayload,
+    clickToPlaceMode,
+    selectedType,
+    objectLabel,
+    rotation,
+    rotationAngle,
+    objectScale,
+    colorVariant,
+    linkedProjectId,
+    previewZ,
+    selectedPlacedObjectId,
+    showGridOverlay,
+    useStackBrush,
+    inventoryStack,
+  ]);
+
+  const handlePasscodeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!passcodeInput.trim()) {
+      setAuthError('Please enter your secret owner passcode.');
+      return;
+    }
+    if (!verifyAdminPasscode(passcodeInput)) {
+      setAuthError('Access denied. Owner only (Higma).');
+      return;
+    }
+    setAuthError(null);
+    loginAdmin();
+  };
+
+  const placeFurnitureAtTile = (
+    payload: DragFurniturePayload,
+    targetX: number,
+    targetY: number
+  ) => {
+    if (useStackBrush && inventoryStack.length > 0) {
+      const placedList = placeInventoryStackAtTile(
+        targetX,
+        targetY,
+        placementMode
+      );
+      if (placedList.length > 0) {
+        const topPlaced = placedList[placedList.length - 1];
+        setCoordX(targetX);
+        setCoordY(targetY);
+        setCoordZ(topPlaced.z);
+        setSelectedPlacedObjectId(topPlaced.id);
+        setStatusToast(
+          `Placed ${placedList.length}-item Inventory Stack at (${targetX}, ${targetY})!`
+        );
+      }
+      return;
+    }
+
+    const spec = OBJECT_CATALOG[payload.type];
+    const normalizedTvUrl =
+      payload.type === 'youtube_tv'
+        ? normalizeYouTubeEmbedUrl(payload.videoUrl || tvVideoUrlInput).watchUrl
+        : undefined;
+    const created = addObject(
+      {
+        type: payload.type,
+        label: payload.label,
+        x: targetX,
+        y: targetY,
+        z:
+          placementMode === 'replace' || spec.defaultWalkable
+            ? 0
+            : getNextStackHeightAtTile(targetX, targetY, objects),
+        rotation: payload.rotation,
+        rotationAngle: payload.rotationAngle ?? rotationAngle,
+        scale: payload.scale ?? objectScale,
+        colorVariant: payload.colorVariant,
+        projectId:
+          payload.type === 'neon_bulletin' || payload.type === 'floating_screen'
+            ? payload.projectId || linkedProjectId
+            : undefined,
+        videoUrl: normalizedTvUrl,
+        imageUrl:
+          payload.imageUrl ||
+          (isWallPosterType(payload.type)
+            ? posterImageUrlInput ||
+              DEFAULT_POSTER_IMAGES[
+                payload.type as keyof typeof DEFAULT_POSTER_IMAGES
+              ]
+            : undefined),
+        consumeInventoryItemId:
+          payload.inventoryItemId || selectedInventoryItemId || undefined,
+      },
+      placementMode
+    );
+
+    setCoordX(targetX);
+    setCoordY(targetY);
+    setCoordZ(created.z);
+    setSelectedPlacedObjectId(created.id);
+    setStatusToast(
+      `Placed ${HABBO_ENGLISH_NAMES[created.type] || created.label} at (${created.x}, ${created.y})`
+    );
+  };
+
+  const handleSidebarDragStart = (
+    e: React.DragEvent<HTMLButtonElement>,
+    type: RoomObjectType,
+    invItem?: InventoryItem
+  ) => {
+    const spec = OBJECT_CATALOG[type];
+    const isCurrentSelected = selectedType === type;
+    const payload: DragFurniturePayload = {
+      type,
+      label: invItem?.label || HABBO_ENGLISH_NAMES[type] || spec.name,
+      colorVariant:
+        invItem?.colorVariant ||
+        (isCurrentSelected ? colorVariant : spec.defaultColor),
+      rotation: invItem?.defaultRotation || rotation,
+      rotationAngle: invItem?.defaultRotationAngle ?? rotationAngle,
+      scale: invItem?.defaultScale ?? objectScale,
+      inventoryItemId: invItem?.id,
+      projectId:
+        type === 'neon_bulletin' || type === 'floating_screen'
+          ? linkedProjectId
+          : undefined,
+      videoUrl: type === 'youtube_tv' ? tvVideoUrlInput : undefined,
+    };
+
+    if (invItem) {
+      handleSelectInventoryItem(invItem);
+    } else {
+      handleSelectObjectType(type);
+    }
+    setActiveDragPayload(payload);
+
+    const serialized = serializeDragFurniturePayload(payload);
+    e.dataTransfer.setData('application/x-habbo-furniture', serialized);
+    e.dataTransfer.setData('text/plain', serialized);
+    e.dataTransfer.effectAllowed = 'copy';
+  };
+
+  const handleSidebarDragEnd = () => {
+    setActiveDragPayload(null);
+    setDropHoverTile(null);
+  };
+
+  const resolveTileFromPointer = (
+    clientX: number,
+    clientY: number
+  ): GridCoord | null => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    return resolveCanvasDropTile({
+      clientX,
+      clientY,
+      rectLeft: rect.left,
+      rectTop: rect.top,
+      rectWidth: rect.width,
+      rectHeight: rect.height,
+      logicalWidth: dynamicCanvasW,
+      logicalHeight: dynamicCanvasH,
+      originX: dynamicOriginX,
+      originY: dynamicOriginY,
+      gridSize: activeGridSize,
+    });
+  };
+
+  const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const tile = resolveTileFromPointer(e.clientX, e.clientY);
+    setCanvasHoverTile((prev) => {
+      if (!tile && !prev) return null;
+      if (tile && prev && tile.x === prev.x && tile.y === prev.y) return prev;
+      return tile;
+    });
+  };
+
+  const handleCanvasDragOver = (e: React.DragEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    const tile = resolveTileFromPointer(e.clientX, e.clientY);
+    if (tile) {
+      setDropHoverTile((prev) =>
+        prev && prev.x === tile.x && prev.y === tile.y ? prev : tile
+      );
+    }
+  };
+
+  const handleCanvasDrop = (e: React.DragEvent<HTMLCanvasElement>) => {
+    e.preventDefault();
+    const tile =
+      resolveTileFromPointer(e.clientX, e.clientY) ||
+      dropHoverTile || { x: coordX, y: coordY };
+
+    const raw =
+      e.dataTransfer.getData('application/x-habbo-furniture') ||
+      e.dataTransfer.getData('text/plain');
+    const payload =
+      parseDragFurniturePayload(raw) ||
+      activeDragPayload || {
+        type: selectedType,
+        label: objectLabel,
+        colorVariant,
+        rotation,
+        projectId: linkedProjectId,
+      };
+
+    placeFurnitureAtTile(payload, tile.x, tile.y);
+    setActiveDragPayload(null);
+    setDropHoverTile(null);
+  };
+
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const tile = resolveTileFromPointer(e.clientX, e.clientY);
+    if (!tile) return;
+
+    setCoordX(tile.x);
+    setCoordY(tile.y);
+
+    if (clickToPlaceMode) {
+      placeFurnitureAtTile(
+        {
+          type: selectedType,
+          label: objectLabel,
+          colorVariant,
+          rotation,
+          rotationAngle,
+          scale: objectScale,
+          inventoryItemId: selectedInventoryItemId || undefined,
+          projectId: linkedProjectId,
+        },
+        tile.x,
+        tile.y
+      );
+    } else {
+      const topObj = getTopObjectAtTile(tile.x, tile.y, objects);
+      setSelectedPlacedObjectId(topObj ? topObj.id : null);
+      pixelAudio.playConsoleClick();
+    }
+  };
+
+  const handleNudgePlacedObject = (objId: string, dx: number, dy: number) => {
+    const targetObj = objects.find((o) => o.id === objId);
+    if (!targetObj) return;
+    const nextX = Math.max(0, Math.min(activeGridSize - 1, targetObj.x + dx));
+    const nextY = Math.max(0, Math.min(activeGridSize - 1, targetObj.y + dy));
+    if (nextX === targetObj.x && nextY === targetObj.y) return;
+
+    moveObject(objId, nextX, nextY, placementMode);
+    setCoordX(nextX);
+    setCoordY(nextY);
+    setSelectedPlacedObjectId(objId);
+  };
+
+  // Filtered inventory items for the Inventory Management Grid
+  const activeCatSpec = BC_CATEGORIES.find((c) => c.id === bcCategory);
+  const filteredInventory = inventory.filter((item) => {
+    if (
+      activeCatSpec?.types &&
+      !activeCatSpec.types.includes(item.type)
+    ) {
+      return false;
+    }
+    if (sidebarSearch.trim()) {
+      const q = sidebarSearch.toLowerCase();
+      const enName = (HABBO_ENGLISH_NAMES[item.type] || '').toLowerCase();
+      return (
+        enName.includes(q) ||
+        item.label.toLowerCase().includes(q) ||
+        item.type.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
+  const totalInventoryUnits = inventory.reduce(
+    (acc, item) => acc + item.quantity,
+    0
+  );
+  const activeInventoryItem = inventory.find(
+    (item) => item.id === selectedInventoryItemId
+  );
+
+  // Currently selected placed object on the floor (for quick move/rotate/scale/pick-up)
+  const activeFloorObj =
+    objects.find((o) => o.id === selectedPlacedObjectId) ||
+    getTopObjectAtTile(coordX, coordY, objects);
+
+  const handleScaleChange = (rawScale: number, applyToFloor = true) => {
+    const clamped = clampObjectScale(rawScale);
+    setObjectScale(clamped);
+    if (selectedInventoryItemId) {
+      updateInventoryItemTransform(selectedInventoryItemId, {
+        defaultScale: clamped,
+      });
+    }
+    if (applyToFloor && activeFloorObj) {
+      updateObjectTransform(activeFloorObj.id, { scale: clamped });
+    }
+  };
+
+  const handleRotationAngleChange = (rawAngle: number, applyToFloor = true) => {
+    const norm = normalizeRotationAngle(rawAngle, rotation);
+    const nextCardinal = angleToIsometricRotation(norm);
+    setRotationAngle(norm);
+    setRotation(nextCardinal);
+    if (selectedInventoryItemId) {
+      updateInventoryItemTransform(selectedInventoryItemId, {
+        defaultRotation: nextCardinal,
+        defaultRotationAngle: norm,
+      });
+    }
+    if (applyToFloor && activeFloorObj) {
+      updateObjectTransform(activeFloorObj.id, {
+        rotation: nextCardinal,
+        rotationAngle: norm,
+      });
+    }
+  };
+
+  // Interactive On-Canvas Drag Handles (Scale & Rotate Gizmo) window listeners
+  useEffect(() => {
+    if (!gizmoDragState) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      if (gizmoDragState.mode === 'scale') {
+        const dy = gizmoDragState.startClientY - e.clientY;
+        const dx = e.clientX - gizmoDragState.startClientX;
+        const delta = (dy + dx * 0.4) / 75;
+        const nextScale = clampObjectScale(
+          gizmoDragState.initialScale + delta
+        );
+        setObjectScale(nextScale);
+        updateObjectTransform(gizmoDragState.objectId, { scale: nextScale });
+      } else if (gizmoDragState.mode === 'rotate') {
+        const rad = Math.atan2(
+          e.clientY - gizmoDragState.centerClientY,
+          e.clientX - gizmoDragState.centerClientX
+        );
+        const deg = normalizeRotationAngle(
+          Math.round((rad * 180) / Math.PI) + 90
+        );
+        const nextCardinal = angleToIsometricRotation(deg);
+        setRotationAngle(deg);
+        setRotation(nextCardinal);
+        updateObjectTransform(gizmoDragState.objectId, {
+          rotation: nextCardinal,
+          rotationAngle: deg,
+        });
+      }
+    };
+
+    const handlePointerUp = () => {
+      setGizmoDragState(null);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [gizmoDragState, updateObjectTransform]);
+
+  useEffect(() => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return;
+    const updateScale = () => {
+      const rect = canvas.getBoundingClientRect();
+      if (rect.width > 0) {
+        setCanvasDisplayScale(rect.width / dynamicCanvasW);
+      }
+    };
+    updateScale();
+    const ro = new ResizeObserver(updateScale);
+    ro.observe(canvas);
+    return () => ro.disconnect();
+  }, [isAdminAuthenticated, isLoaded, dynamicCanvasW]);
+
+  const handleProgramTvUrl = (e: React.FormEvent) => {
+    e.preventDefault();
+    const vidId = extractYouTubeVideoId(tvVideoUrlInput);
+    if (!vidId) {
+      setTvUrlError('Please enter a valid YouTube URL or 11-character Video ID.');
+      return;
+    }
+    setTvUrlError(null);
+    const canonical = `https://www.youtube.com/watch?v=${vidId}`;
+    setTvVideoUrlInput(canonical);
+
+    const existingTvs = objects.filter((o) => o.type === 'youtube_tv');
+    if (existingTvs.length > 0) {
+      const targetId =
+        activeFloorObj?.type === 'youtube_tv' ? activeFloorObj.id : 'all';
+      updateObjectVideoUrl(targetId, canonical);
+      setStatusToast(`Programmed 3D YouTube TV to play video (${vidId})!`);
+    } else {
+      // Also place a TV on the right wall at (5, 0) if none exists yet so the Admin sees it immediately!
+      placeFurnitureAtTile(
+        {
+          type: 'youtube_tv',
+          label: HABBO_ENGLISH_NAMES['youtube_tv'],
+          colorVariant: '#EF4444',
+          rotation: 'se',
+          videoUrl: canonical,
+        },
+        5,
+        0
+      );
+      setStatusToast(`Added & programmed 3D YouTube TV (${vidId})!`);
+    }
+  };
+
+  if (!isLoaded) {
+    return (
+      <div className="min-h-screen bg-black text-white flex items-center justify-center p-6 font-sans text-xs">
+        Loading Builders&apos; Club Warehouse...
+      </div>
+    );
+  }
+
+  // --- SECRET OWNER GATE (Styled as a classic Habbo Dialog on Black Background) ---
+  if (!isAdminAuthenticated) {
+    return (
+      <div className="min-h-screen bg-black text-[#1E1E1E] flex items-center justify-center p-4 select-none">
+        <div
+          data-testid="secret-admin-gate"
+          className="w-full max-w-[380px] rounded-[6px] border-2 border-black bg-[#E2E2DE] shadow-[0_12px_40px_rgba(0,0,0,0.9)] overflow-hidden"
+        >
+          {/* Classic Gold Habbo Title Bar */}
+          <div className="flex items-center justify-between bg-[#D4912A] border-b-2 border-[#8C5A0E] px-3 py-1.5 shadow-[inset_0_1px_0_#F2C166]">
+            <span className="text-xs font-bold text-white drop-shadow-[0_1px_0_rgba(0,0,0,0.6)]">
+              Builders&apos; Club Warehouse · Private Access
+            </span>
+            <Link
+              href="/"
+              title="Back to Room"
+              className="flex h-[18px] w-[18px] items-center justify-center rounded-[2px] border border-black bg-[#C93B2B] text-white hover:bg-[#E04836]"
+            >
+              <X className="h-3 w-3 stroke-[3]" />
+            </Link>
+          </div>
+
+          {/* Dark Builders' Club Banner */}
+          <div className="flex items-center gap-3 bg-[#2C2A29] border-b border-black px-3.5 py-3 text-white">
+            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-black bg-[#F59E0B] text-black shadow-inner">
+              <Lock className="h-5 w-5" />
+            </div>
+            <div>
+              <div className="text-sm font-bold leading-tight">
+                Owner Zone (Higma)
+              </div>
+              <div className="text-[11px] text-[#CCCCCC] mt-0.5">
+                Enter your secret passcode to open the room floor studio.
+              </div>
+            </div>
+          </div>
+
+          {/* Form Body */}
+          <form onSubmit={handlePasscodeSubmit} className="p-4 space-y-3">
+            <div>
+              <label
+                htmlFor="admin-passcode-input"
+                className="block text-[11px] font-bold text-[#333333] mb-1"
+              >
+                Secret passcode or owner email:
+              </label>
+              <input
+                id="admin-passcode-input"
+                data-testid="admin-passcode-input"
+                type="password"
+                autoComplete="off"
+                value={passcodeInput}
+                onChange={(e) => {
+                  setPasscodeInput(e.target.value);
+                  setAuthError(null);
+                }}
+                placeholder="e.g. HIGMA-777"
+                className="w-full rounded-[3px] border border-[#7A7A76] bg-white px-2.5 py-1.5 text-xs text-black placeholder:text-[#888888] focus:border-black focus:outline-none shadow-[inset_0_1px_2px_rgba(0,0,0,0.2)]"
+              />
+            </div>
+
+            {authError && (
+              <div
+                role="alert"
+                className="rounded-[3px] border border-[#991B1B] bg-[#FEE2E2] px-2.5 py-1.5 text-[11px] font-medium text-[#7F1D1D]"
+              >
+                {authError}
+              </div>
+            )}
+
+            <div className="flex items-center justify-between gap-2 pt-1">
+              <Link
+                href="/"
+                className="inline-flex items-center gap-1 rounded-[3px] border border-black bg-[#CCCCCC] px-3 py-1.5 text-[11px] font-bold text-[#222222] hover:bg-[#DDDDDD] shadow-[inset_0_1px_0_#FFFFFF]"
+              >
+                <ArrowLeft className="h-3 w-3" />
+                <span>Back</span>
+              </Link>
+
+              <button
+                type="submit"
+                data-testid="admin-auth-submit"
+                className="inline-flex items-center gap-1.5 rounded-[3px] border-2 border-black bg-[#D49A2A] px-4 py-1.5 text-xs font-bold text-white hover:bg-[#E5AA3A] shadow-[inset_0_1px_0_#F7CA65] drop-shadow-[0_1px_0_rgba(0,0,0,0.5)]"
+              >
+                <Unlock className="h-3.5 w-3.5" />
+                <span>Open Warehouse</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  // --- AUTHENTIC HABBO BUILDERS' CLUB ("Builders' Club Warehouse") FLOOR STUDIO ---
+  return (
+    <div className="min-h-screen bg-black text-white flex flex-col lg:flex-row items-start justify-between p-2 sm:p-3 gap-3 overflow-x-hidden select-none">
+      {/* LEFT WINDOW: BUILDERS' CLUB WAREHOUSE */}
+      <aside
+        data-testid="admin-dnd-sidebar"
+        aria-label="Builders' Club Warehouse"
+        className="w-full lg:w-[412px] shrink-0 rounded-[6px] border-2 border-black bg-[#E2E2DE] text-[#1E1E1E] shadow-[0_8px_32px_rgba(0,0,0,0.95)] overflow-hidden z-20"
+      >
+        {/* 1. Gold Title Bar */}
+        <div className="relative flex items-center justify-center bg-[#D4912A] border-b-2 border-[#8C5A0E] px-3 py-1 shadow-[inset_0_1px_0_#F2C166]">
+          <h1 className="text-[12px] font-bold tracking-tight text-white drop-shadow-[0_1px_0_rgba(0,0,0,0.65)]">
+            Builders&apos; Club Warehouse
+          </h1>
+          <div className="absolute right-1.5 top-1 flex items-center gap-1">
+            <button
+              type="button"
+              onClick={logoutAdmin}
+              title="Lock owner access"
+              className="flex h-[17px] px-1.5 items-center justify-center rounded-[2px] border border-black bg-[#4A4745] text-[9px] font-bold text-white hover:bg-[#615D5B]"
+            >
+              Lock
+            </button>
+            <Link
+              href="/"
+              title="Close and return to room"
+              className="flex h-[17px] w-[17px] items-center justify-center rounded-[2px] border border-black bg-[#C93B2B] text-white hover:bg-[#E04836] shadow-[inset_0_1px_0_#F08070]"
+            >
+              <X className="h-3 w-3 stroke-[3]" />
+            </Link>
+          </div>
+        </div>
+
+        {/* 2. Dark Charcoal Status Banner with Hard-Hat Icon */}
+        <div
+          className="flex items-center gap-3.5 bg-[#2B2827] border-b-2 border-black px-3.5 py-2.5 text-white"
+          style={{
+            backgroundImage:
+              'radial-gradient(rgba(255,255,255,0.05) 1px, transparent 0)',
+            backgroundSize: '12px 12px',
+          }}
+        >
+          {/* Yellow Builders' Club Hard-Hat Pixel Badge */}
+          <div className="flex flex-col items-center justify-center shrink-0">
+            <div className="h-2.5 w-6 rounded-t-full border border-black bg-[#FACC15] shadow-[inset_0_1px_0_#FEF08A]" />
+            <div className="h-1.5 w-8 border border-black bg-[#EAB308]" />
+            <div className="mt-0.5 flex items-center gap-0.5 rounded-[2px] border border-black bg-[#D97706] px-1 py-0.5 text-[7px] font-black leading-none text-white">
+              BC
+            </div>
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <div className="text-[15px] font-bold leading-tight text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
+              Warehouse &amp; Inventory Studio
+            </div>
+            <div className="mt-0.5 text-[11px] leading-snug text-[#CCCCCC]">
+              Inventory Stock:{' '}
+              <span
+                className="font-bold text-[#34D399]"
+                data-testid="metric-inventory-units"
+              >
+                {totalInventoryUnits} items ({inventory.length} slots)
+              </span>
+            </div>
+            <div className="text-[11px] leading-snug text-[#CCCCCC]">
+              Placed in Room:{' '}
+              <span
+                className="font-bold text-[#F37021]"
+                data-testid="metric-total-objects"
+              >
+                {objects.length}
+              </span>
+              <span className="font-bold text-[#F37021]">/100</span>
+              {inventoryStack.length > 0 && (
+                <span className="ml-2 rounded bg-[#00748C] px-1.5 py-0.5 text-[9px] font-bold text-white">
+                  Stack Ready ({inventoryStack.length})
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* 3. Main Dialog Body: Left Category Tree + Right Preview, Slots, Palette & Buttons */}
+        <div className="p-2 flex flex-col sm:flex-row gap-2 bg-[#E2E2DE]">
+          {/* LEFT COLUMN: Search Input + Category Tree */}
+          <div className="w-full sm:w-[144px] shrink-0 flex flex-col gap-1.5">
+            {/* Search Input ("Search here" + pencil icon) */}
+            <div className="relative flex items-center">
+              <input
+                type="search"
+                value={sidebarSearch}
+                onChange={(e) => setSidebarSearch(e.target.value)}
+                placeholder="Search here"
+                aria-label="Search here"
+                className="w-full rounded-[4px] border border-[#8E8E8A] bg-white pl-2 pr-6 py-1 text-[11px] text-black placeholder:text-[#999999] focus:border-black focus:outline-none shadow-[inset_0_1px_2px_rgba(0,0,0,0.18)]"
+              />
+              <Pencil
+                aria-hidden="true"
+                className="pointer-events-none absolute right-1.5 h-3 w-3 text-[#D97706]"
+              />
+            </div>
+
+            {/* Category List Box */}
+            <div className="flex-1 rounded-[2px] border border-[#8E8E8A] bg-[#EEEEEE] flex flex-col overflow-hidden min-h-[340px]">
+              {/* Top quick row: Building Blocks */}
+              <button
+                type="button"
+                onClick={() => {
+                  setBcCategory('blocks_bottles');
+                  handleSelectObjectType('building_block');
+                }}
+                className="flex items-center gap-1.5 px-2 py-1 text-left text-[11px] font-bold text-[#555555] hover:bg-[#E4E4E0] border-b border-[#DCDCD8]"
+              >
+                <span className="inline-block h-2.5 w-2.5 shrink-0 border border-black bg-[#FACC15]" />
+                <span className="truncate">Building Blocks</span>
+              </button>
+
+              {/* Static top header item ("By Type" in classic Habbo orange bar) */}
+              <div className="flex items-center justify-between bg-[#F37021] px-2 py-1 text-[11px] font-bold text-white border-b border-[#C85410]">
+                <span className="flex items-center gap-1.5">
+                  <span className="inline-block h-2.5 w-2.5 border border-black bg-[#FDE047]" />
+                  <span>By Type</span>
+                </span>
+                <span className="text-[9px]">▼</span>
+              </div>
+
+              {/* Sub-categories */}
+              <div className="flex-1 overflow-y-auto py-1 space-y-0.5">
+                {BC_CATEGORIES.map((cat) => {
+                  const isActive = bcCategory === cat.id;
+                  return (
+                    <button
+                      key={cat.id}
+                      type="button"
+                      onClick={() => setBcCategory(cat.id)}
+                      className={`w-full flex items-center gap-2 px-2.5 py-1 text-left text-[11px] transition-colors ${
+                        isActive
+                          ? 'bg-[#D6D6D2] font-bold text-[#D9531E] italic'
+                          : 'text-[#B45309] hover:bg-[#E4E4E0] italic'
+                      }`}
+                    >
+                      <span
+                        className="inline-block h-2.5 w-2.5 shrink-0 border border-black"
+                        style={{ backgroundColor: cat.iconColor }}
+                      />
+                      <span className="truncate">{cat.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Bottom quick room presets & Animal Manager inside the left tree footer */}
+              <div className="border-t border-[#BDBDB8] bg-[#E2E2DE] p-1.5 space-y-1">
+                <div className="text-[9px] font-bold uppercase text-[#555555] px-0.5">
+                  Room Builder
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  <button
+                    type="button"
+                    data-testid="preset-organized-room"
+                    onClick={() => {
+                      applyOrganizedPreset();
+                      setStatusToast('Organized layout applied!');
+                    }}
+                    className="flex items-center justify-center gap-1 rounded-[2px] border border-[#7A7A76] bg-[#F4F4F0] px-1.5 py-1 text-[10px] font-bold text-[#222222] hover:bg-white"
+                    title="Neatly organize all furniture"
+                  >
+                    <Wand2 className="h-2.5 w-2.5 text-[#D97706]" />
+                    <span>Organize</span>
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="preset-clear-floor"
+                    onClick={() => {
+                      clearFloorToMinimal();
+                      setSelectedPlacedObjectId(null);
+                      setStatusToast('All floor furniture cleared!');
+                    }}
+                    className="flex items-center justify-center gap-1 rounded-[2px] border border-[#7A7A76] bg-[#F4F4F0] px-1.5 py-1 text-[10px] font-bold text-[#222222] hover:bg-white"
+                    title="Clear all furniture from the floor"
+                  >
+                    <Eraser className="h-2.5 w-2.5 text-[#DC2626]" />
+                    <span>Clear All</span>
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowGridOverlay((prev) => !prev)}
+                    className={`rounded-[2px] border px-1.5 py-0.5 text-[10px] font-bold ${
+                      showGridOverlay
+                        ? 'border-black bg-[#D49A2A] text-white'
+                        : 'border-[#7A7A76] bg-[#F4F4F0] text-[#333333]'
+                    }`}
+                  >
+                    Grid: {showGridOverlay ? 'ON' : 'OFF'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      resetRoomToDefault();
+                      setStatusToast('Default room & animals restored.');
+                    }}
+                    className="flex items-center justify-center gap-1 rounded-[2px] border border-[#7A7A76] bg-[#F4F4F0] px-1.5 py-0.5 text-[10px] font-bold text-[#333333] hover:bg-white"
+                  >
+                    <RotateCcw className="h-2.5 w-2.5" />
+                    <span>Default</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* RIGHT COLUMN: 3D Isometric Preview + Icon Grid + Palette + Action Buttons */}
+          <div className="flex-1 min-w-0 flex flex-col gap-1.5">
+            {/* 1. Isometric 3D Furniture Preview Box */}
+            <div className="relative h-[116px] w-full rounded-[2px] border border-[#7A7A76] bg-[#B2B2AE] overflow-hidden shadow-[inset_0_1px_2px_rgba(0,0,0,0.25)]">
+              <canvas
+                ref={builderPreviewCanvasRef}
+                width={242}
+                height={116}
+                className="h-full w-full block"
+              />
+              {/* Selected Item Title at Top-Left */}
+              <div className="pointer-events-none absolute left-2 top-1.5 max-w-[165px] truncate text-[11px] font-bold text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.85)]">
+                {HABBO_ENGLISH_NAMES[selectedType] ||
+                  OBJECT_CATALOG[selectedType].name}
+              </div>
+
+              {/* 360° Rotation Arrows at Top-Right */}
+              <div className="absolute right-1.5 top-1.5 flex items-center gap-1">
+                <button
+                  type="button"
+                  data-testid="sidebar-rotation-left"
+                  onClick={() => {
+                    const nextRot = getNextRotation(rotation, -1);
+                    setRotation(nextRot);
+                    setRotationAngle(rotationToAngle(nextRot));
+                    if (selectedInventoryItemId) {
+                      updateInventoryItemTransform(selectedInventoryItemId, {
+                        defaultRotation: nextRot,
+                        defaultRotationAngle: rotationToAngle(nextRot),
+                      });
+                    }
+                  }}
+                  title="Rotate left (-90° / 360°)"
+                  className="flex h-[20px] w-[20px] items-center justify-center rounded-[3px] border border-black bg-[#D6D6D2] text-black hover:bg-white shadow-[inset_0_1px_0_#FFFFFF]"
+                >
+                  <ArrowLeft className="h-3 w-3 stroke-[2.5]" />
+                </button>
+                <button
+                  type="button"
+                  data-testid="sidebar-rotation-toggle"
+                  onClick={() => {
+                    const nextRot = getNextRotation(rotation, 1);
+                    setRotation(nextRot);
+                    setRotationAngle(rotationToAngle(nextRot));
+                    if (selectedInventoryItemId) {
+                      updateInventoryItemTransform(selectedInventoryItemId, {
+                        defaultRotation: nextRot,
+                        defaultRotationAngle: rotationToAngle(nextRot),
+                      });
+                    }
+                  }}
+                  title="Rotate right (+90° / 360°)"
+                  className="flex h-[20px] w-[20px] items-center justify-center rounded-[3px] border border-black bg-[#D6D6D2] text-black hover:bg-white shadow-[inset_0_1px_0_#FFFFFF]"
+                >
+                  <ArrowRight className="h-3 w-3 stroke-[2.5]" />
+                </button>
+              </div>
+
+              {/* 360° Angle & Scale Indicator Badge at Bottom-Right */}
+              <span
+                data-testid="sidebar-rotation-angle"
+                className="pointer-events-none absolute bottom-1.5 right-1.5 rounded-[2px] border border-black/60 bg-black/65 px-1.5 py-0.5 text-[9px] font-bold uppercase text-white"
+              >
+                {useStackBrush && inventoryStack.length > 0
+                  ? `STACK (${inventoryStack.length} TIERS)`
+                  : `${rotation.toUpperCase()} · ${rotationAngle}° · ${objectScale.toFixed(2)}x`}
+              </span>
+            </div>
+
+            {/* 2. Inventory Mode Switcher Tabs: Stocked Inventory vs Pre-Placement Stack Builder */}
+            <div className="flex items-center justify-between gap-1">
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  data-testid="warehouse-tab-inventory"
+                  onClick={() => {
+                    setWarehouseTab('inventory');
+                    setUseStackBrush(false);
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-[3px] border px-2 py-0.5 text-[10px] font-bold ${
+                    warehouseTab === 'inventory'
+                      ? 'border-black bg-[#2B2827] text-white'
+                      : 'border-[#8E8E8A] bg-[#D6D6D2] text-[#333333] hover:bg-white'
+                  }`}
+                >
+                  <Package className="h-3 w-3 text-[#FACC15]" />
+                  <span>Inventory ({inventory.length})</span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="warehouse-tab-stack"
+                  onClick={() => {
+                    setWarehouseTab('stack');
+                    if (inventoryStack.length > 0) {
+                      setUseStackBrush(true);
+                    }
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-[3px] border px-1.5 py-0.5 text-[10px] font-bold ${
+                    warehouseTab === 'stack'
+                      ? 'border-black bg-[#00748C] text-white'
+                      : 'border-[#8E8E8A] bg-[#D6D6D2] text-[#333333] hover:bg-white'
+                  }`}
+                >
+                  <Layers className="h-3 w-3 text-[#38BDF8]" />
+                  <span>Stack ({inventoryStack.length})</span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="warehouse-tab-architecture"
+                  onClick={() => {
+                    setWarehouseTab('architecture');
+                    setUseStackBrush(false);
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-[3px] border px-1.5 py-0.5 text-[10px] font-bold ${
+                    warehouseTab === 'architecture'
+                      ? 'border-black bg-[#D4912A] text-white'
+                      : 'border-[#8E8E8A] bg-[#D6D6D2] text-[#333333] hover:bg-white'
+                  }`}
+                >
+                  <span>Walls &amp; Space ({activeGridSize}×{activeGridSize})</span>
+                </button>
+              </div>
+
+              <button
+                type="button"
+                data-testid="inventory-restock-default"
+                onClick={() => {
+                  resetInventoryToDefault();
+                  setStatusToast('Inventory restocked to default quantities!');
+                }}
+                title="Reset inventory stock to default"
+                className="rounded-[2px] border border-[#8E8E8A] bg-[#D6D6D2] px-1.5 py-0.5 text-[9px] font-bold text-[#333333] hover:bg-white"
+              >
+                Restock All
+              </button>
+            </div>
+
+            {warehouseTab === 'inventory' ? (
+              <>
+                {/* Scrollable Inventory Icon Grid with Stock Counts */}
+                <div
+                  data-testid="admin-inventory-grid"
+                  className="rounded-[2px] border border-[#8E8E8A] bg-[#CCCCCC] p-1.5 h-[126px] overflow-y-auto shadow-[inset_0_1px_2px_rgba(0,0,0,0.18)]"
+                >
+                  {filteredInventory.length > 0 ? (
+                    <div className="grid grid-cols-5 gap-1">
+                      {filteredInventory.map((item) => {
+                        const isSelected =
+                          selectedInventoryItemId === item.id ||
+                          (!selectedInventoryItemId &&
+                            selectedType === item.type);
+                        return (
+                          <button
+                            key={item.id}
+                            type="button"
+                            draggable
+                            data-testid={`dnd-furniture-item-${item.type}`}
+                            data-inventory-id={item.id}
+                            onDragStart={(e) =>
+                              handleSidebarDragStart(e, item.type, item)
+                            }
+                            onDragEnd={handleSidebarDragEnd}
+                            onClick={() => handleSelectInventoryItem(item)}
+                            title={`${item.label} (Stock: ${item.quantity} · Scale: ${item.defaultScale}x · Rot: ${item.defaultRotationAngle}°)`}
+                            className={`relative flex h-[40px] w-full items-center justify-center rounded-[3px] transition-all cursor-grab active:cursor-grabbing ${
+                              isSelected
+                                ? 'border-2 border-[#E59400] bg-[#F5F5F2] shadow-[0_0_0_1px_#000000]'
+                                : 'border border-[#8E8E8A] bg-[#DFDFDB] hover:bg-[#ECECE8] shadow-[inset_0_1px_0_#FFFFFF]'
+                            }`}
+                          >
+                            <FurniSlotThumbnail
+                              type={item.type}
+                              colorVariant={item.colorVariant}
+                              projects={projects}
+                              spritesReady={spritesReady}
+                            />
+                            <span
+                              data-testid={`inventory-qty-${item.type}`}
+                              className="pointer-events-none absolute bottom-0.5 right-0.5 rounded-[2px] border border-black/50 bg-black/75 px-1 text-[8px] font-bold leading-tight text-[#FACC15]"
+                            >
+                              ×{item.quantity}
+                            </span>
+                            {item.defaultScale !== 1 && (
+                              <span className="pointer-events-none absolute top-0.5 left-0.5 rounded-[2px] bg-[#00748C] px-0.5 text-[7px] font-bold leading-tight text-white">
+                                {item.defaultScale}x
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="flex h-full flex-col items-center justify-center text-center text-[10px] text-[#444444]">
+                      <span>No matching items in inventory.</span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          addInventoryItem({
+                            type: selectedType,
+                            label: HABBO_ENGLISH_NAMES[selectedType],
+                            colorVariant,
+                            quantity: 5,
+                            defaultScale: objectScale,
+                            defaultRotation: rotation,
+                            defaultRotationAngle: rotationAngle,
+                          });
+                          setStatusToast(
+                            `Added 5× ${HABBO_ENGLISH_NAMES[selectedType]} to inventory!`
+                          );
+                        }}
+                        className="mt-1 rounded border border-black bg-[#D49A2A] px-2 py-0.5 text-[9px] font-bold text-white"
+                      >
+                        + Add {HABBO_ENGLISH_NAMES[selectedType]}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Inventory Item Actions Bar: +Stock, -Remove, +Add to Stack */}
+                <div className="flex flex-wrap items-center justify-between gap-1 rounded-[2px] border border-[#8E8E8A] bg-[#D6D6D2] px-1.5 py-1 text-[10px]">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      data-testid="inventory-add-stock-btn"
+                      onClick={() => {
+                        addInventoryItem({
+                          type: selectedType,
+                          label: objectLabel,
+                          colorVariant,
+                          quantity: 1,
+                          defaultScale: objectScale,
+                          defaultRotation: rotation,
+                          defaultRotationAngle: rotationAngle,
+                        });
+                        setStatusToast(
+                          `Added +1 ${objectLabel} (${objectScale.toFixed(2)}x, ${rotationAngle}°) to Inventory!`
+                        );
+                      }}
+                      className="inline-flex items-center gap-0.5 rounded-[2px] border border-black bg-[#15803D] px-1.5 py-0.5 font-bold text-white hover:bg-[#16A34A]"
+                      title="Add or restock this item configuration in your inventory"
+                    >
+                      <Plus className="h-2.5 w-2.5" />
+                      <span>Stock</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      data-testid="inventory-remove-stock-btn"
+                      disabled={!activeInventoryItem}
+                      onClick={() => {
+                        if (!activeInventoryItem) return;
+                        removeInventoryItem(activeInventoryItem.id, 1);
+                        setStatusToast(
+                          `Removed 1× ${activeInventoryItem.label} from Inventory.`
+                        );
+                      }}
+                      className="inline-flex items-center gap-0.5 rounded-[2px] border border-black bg-[#C93B2B] px-1.5 py-0.5 font-bold text-white hover:bg-[#E04836] disabled:opacity-40"
+                      title="Remove 1 unit of the selected item from inventory"
+                    >
+                      <Minus className="h-2.5 w-2.5" />
+                      <span>Remove</span>
+                    </button>
+                  </div>
+
+                  <button
+                    type="button"
+                    data-testid="inventory-push-stack-btn"
+                    onClick={() => {
+                      pushToInventoryStack({
+                        inventoryItemId: activeInventoryItem?.id,
+                        type: selectedType,
+                        label: objectLabel,
+                        colorVariant,
+                        scale: objectScale,
+                        rotation,
+                        rotationAngle,
+                        projectId:
+                          selectedType === 'neon_bulletin' ||
+                          selectedType === 'floating_screen'
+                            ? linkedProjectId
+                            : undefined,
+                        videoUrl:
+                          selectedType === 'youtube_tv'
+                            ? tvVideoUrlInput
+                            : undefined,
+                      });
+                      setUseStackBrush(true);
+                      setStatusToast(
+                        `Stacked ${objectLabel} (Tier #${inventoryStack.length + 1}) in Pre-Placement Stack!`
+                      );
+                    }}
+                    className="inline-flex items-center gap-1 rounded-[2px] border border-black bg-[#00748C] px-2 py-0.5 font-bold text-white hover:bg-[#0089A6]"
+                    title="Add this item to the pre-placement stack to place multiple stacked objects at once"
+                  >
+                    <Layers className="h-2.5 w-2.5" />
+                    <span>+ Stack ({inventoryStack.length}/6)</span>
+                  </button>
+                </div>
+              </>
+            ) : (
+              /* Pre-Placement Inventory Stack Composer Panel */
+              <div
+                data-testid="admin-inventory-stack-panel"
+                className="rounded-[2px] border border-[#8E8E8A] bg-[#CCCCCC] p-1.5 h-[156px] flex flex-col justify-between shadow-[inset_0_1px_2px_rgba(0,0,0,0.18)]"
+              >
+                <div className="flex items-center justify-between border-b border-[#999995] pb-1 text-[10px]">
+                  <span className="font-bold text-[#1E1E1E]">
+                    Pre-Placement Stack ({inventoryStack.length}/6 Tiers)
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      data-testid="stack-add-current-item"
+                      onClick={() => {
+                        pushToInventoryStack({
+                          inventoryItemId: activeInventoryItem?.id,
+                          type: selectedType,
+                          label: objectLabel,
+                          colorVariant,
+                          scale: objectScale,
+                          rotation,
+                          rotationAngle,
+                        });
+                        setUseStackBrush(true);
+                      }}
+                      className="rounded-[2px] border border-black bg-[#15803D] px-1.5 py-0.5 text-[9px] font-bold text-white hover:bg-[#16A34A]"
+                    >
+                      + Add Selected
+                    </button>
+                    {inventoryStack.length > 0 && (
+                      <button
+                        type="button"
+                        data-testid="stack-clear-all"
+                        onClick={() => {
+                          clearInventoryStack();
+                          setUseStackBrush(false);
+                          setStatusToast('Cleared pre-placement stack.');
+                        }}
+                        className="rounded-[2px] border border-black bg-[#C93B2B] px-1.5 py-0.5 text-[9px] font-bold text-white hover:bg-[#E04836]"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex-1 overflow-y-auto py-1 space-y-1">
+                  {inventoryStack.length > 0 ? (
+                    [...inventoryStack].reverse().map((layer, revIdx) => {
+                      const actualIdx = inventoryStack.length - 1 - revIdx;
+                      return (
+                        <div
+                          key={layer.id}
+                          data-testid={`stack-layer-row-${actualIdx}`}
+                          className="flex items-center justify-between gap-1 rounded-[2px] border border-[#8E8E8A] bg-[#ECECE8] px-1.5 py-0.5 text-[10px]"
+                        >
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <span className="rounded bg-[#2B2827] px-1 text-[8px] font-mono font-bold text-[#FACC15]">
+                              z={actualIdx}
+                            </span>
+                            <span
+                              className="h-2.5 w-2.5 shrink-0 rounded-full border border-black"
+                              style={{ backgroundColor: layer.colorVariant }}
+                            />
+                            <span className="truncate font-bold text-[#1E1E1E]">
+                              {layer.label}
+                            </span>
+                            <span className="text-[9px] text-[#555555] shrink-0">
+                              {layer.scale}x·{layer.rotationAngle}°
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                reorderInventoryStack(layer.id, 'up')
+                              }
+                              title="Move layer higher in stack"
+                              className="rounded border border-[#7A7A76] bg-white p-0.5 hover:bg-amber-100"
+                            >
+                              <ChevronUp className="h-2.5 w-2.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                reorderInventoryStack(layer.id, 'down')
+                              }
+                              title="Move layer lower in stack"
+                              className="rounded border border-[#7A7A76] bg-white p-0.5 hover:bg-amber-100"
+                            >
+                              <ChevronDown className="h-2.5 w-2.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => removeFromInventoryStack(layer.id)}
+                              title="Remove layer from stack"
+                              className="rounded border border-black bg-[#C93B2B] p-0.5 text-white hover:bg-red-600"
+                            >
+                              <X className="h-2.5 w-2.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  ) : (
+                    <div className="flex h-full items-center justify-center text-center text-[10px] text-[#555555] px-2">
+                      Stack is empty. Click &ldquo;+ Stack&rdquo; on any
+                      inventory item to build a multi-tier bundle before placing!
+                    </div>
+                  )}
+                </div>
+
+                {inventoryStack.length > 0 && (
+                  <div className="flex items-center justify-between border-t border-[#999995] pt-1 text-[10px]">
+                    <label className="inline-flex items-center gap-1 font-bold text-[#1E1E1E] cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={useStackBrush}
+                        onChange={(e) => setUseStackBrush(e.target.checked)}
+                        className="accent-[#00748C]"
+                      />
+                      <span>Brush places full stack</span>
+                    </label>
+                    <button
+                      type="button"
+                      data-testid="place-stack-now-btn"
+                      onClick={() => {
+                        const placed = placeInventoryStackAtTile(
+                          coordX,
+                          coordY,
+                          placementMode
+                        );
+                        if (placed.length > 0) {
+                          setStatusToast(
+                            `Placed ${placed.length}-tier stack at (${coordX}, ${coordY})!`
+                          );
+                        }
+                      }}
+                      className="rounded-[2px] border border-black bg-[#D49A2A] px-2 py-0.5 text-[9px] font-bold text-white hover:bg-[#E3A836]"
+                    >
+                      Place Stack at ({coordX},{coordY})
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : null}
+
+            {warehouseTab === 'architecture' && (
+              <div
+                data-testid="admin-architecture-panel"
+                className="rounded-[2px] border border-[#8E8E8A] bg-[#CCCCCC] p-2 space-y-2 shadow-[inset_0_1px_2px_rgba(0,0,0,0.18)] text-[10px]"
+              >
+                {/* Room Space / Grid Expansion (10x10 up to 16x16) */}
+                <div>
+                  <div className="flex items-center justify-between font-bold text-[#1E1E1E] mb-1">
+                    <span>Expand Room Floor Space:</span>
+                    <span className="font-mono text-[#D97706]">
+                      {activeGridSize}×{activeGridSize} (
+                      {activeGridSize * activeGridSize} tiles)
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {[10, 12, 14, 16].map((size) => (
+                      <button
+                        key={size}
+                        type="button"
+                        data-testid={`room-grid-size-${size}`}
+                        onClick={() => {
+                          updateRoomSettings({ gridSize: size });
+                          setStatusToast(
+                            `Room expanded to ${size}×${size} (${size * size} tiles) · Auto-saved!`
+                          );
+                        }}
+                        className={`rounded-[2px] border py-1 font-bold ${
+                          activeGridSize === size
+                            ? 'border-black bg-[#15803D] text-white'
+                            : 'border-[#7A7A76] bg-[#ECECE8] text-black hover:bg-white'
+                        }`}
+                      >
+                        {size}×{size}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Wall Color & Height Customizer */}
+                <div className="border-t border-[#999995] pt-1.5 space-y-1">
+                  <div className="flex items-center justify-between font-bold text-[#1E1E1E]">
+                    <span>Wall Style &amp; Color:</span>
+                    <span className="font-mono text-[9px]">
+                      H: {roomSettings.wallHeight}px
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {[
+                      { label: 'Brick', color: '#B85A46' },
+                      { label: 'HC Blue', color: '#1E3A8A' },
+                      { label: 'Green', color: '#15803D' },
+                      { label: 'Crimson', color: '#991B1B' },
+                      { label: 'Obsidian', color: '#1E293B' },
+                      { label: 'Cream', color: '#D6D3D1' },
+                    ].map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => {
+                          updateRoomSettings({ wallColor: preset.color });
+                          setStatusToast(
+                            `Wall color set to ${preset.label} (Auto-saved)!`
+                          );
+                        }}
+                        title={preset.label}
+                        className={`h-5 flex-1 rounded-[2px] border ${
+                          roomSettings.wallColor.toLowerCase() ===
+                          preset.color.toLowerCase()
+                            ? 'border-black ring-1 ring-black'
+                            : 'border-black/50'
+                        }`}
+                        style={{ backgroundColor: preset.color }}
+                      />
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[9px] font-bold text-[#333333]">
+                      Wall Height:
+                    </span>
+                    <input
+                      type="range"
+                      min={90}
+                      max={160}
+                      step={2}
+                      value={roomSettings.wallHeight}
+                      onChange={(e) =>
+                        updateRoomSettings({
+                          wallHeight: Number(e.target.value),
+                        })
+                      }
+                      className="h-1.5 flex-1 accent-[#D4912A] cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {/* Floor Pattern & Color Customizer */}
+                <div className="border-t border-[#999995] pt-1.5 space-y-1">
+                  <div className="flex items-center justify-between font-bold text-[#1E1E1E]">
+                    <span>Floor Style &amp; Color:</span>
+                    <div className="flex items-center gap-1">
+                      {(
+                        [
+                          { id: 'oak_planks', label: 'Planks' },
+                          { id: 'marble_checkers', label: 'Checkers' },
+                          { id: 'studio_tile', label: 'Grid Tile' },
+                        ] as const
+                      ).map((pat) => (
+                        <button
+                          key={pat.id}
+                          type="button"
+                          onClick={() =>
+                            updateRoomSettings({ floorPattern: pat.id })
+                          }
+                          className={`rounded border px-1 py-0.5 text-[8px] font-bold ${
+                            roomSettings.floorPattern === pat.id
+                              ? 'border-black bg-[#00748C] text-white'
+                              : 'border-[#7A7A76] bg-white text-black'
+                          }`}
+                        >
+                          {pat.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {[
+                      { label: 'Golden Oak', color: '#DFC184' },
+                      { label: 'Marble', color: '#E2E8F0' },
+                      { label: 'Walnut', color: '#92400E' },
+                      { label: 'VIP Red', color: '#991B1B' },
+                      { label: 'Pitch Turf', color: '#166534' },
+                      { label: 'Slate', color: '#475569' },
+                    ].map((preset) => (
+                      <button
+                        key={preset.label}
+                        type="button"
+                        onClick={() => {
+                          updateRoomSettings({ floorColor: preset.color });
+                          setStatusToast(
+                            `Floor color set to ${preset.label} (Auto-saved)!`
+                          );
+                        }}
+                        title={preset.label}
+                        className={`h-5 flex-1 rounded-[2px] border ${
+                          roomSettings.floorColor.toLowerCase() ===
+                          preset.color.toLowerCase()
+                            ? 'border-black ring-1 ring-black'
+                            : 'border-black/50'
+                        }`}
+                        style={{ backgroundColor: preset.color }}
+                      />
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* 2b. Real-Time Rotation & Scale Sliders Panel */}
+            <div
+              data-testid="admin-transform-controls"
+              className="rounded-[2px] border border-[#8E8E8A] bg-[#D6D6D2] p-1.5 space-y-1.5 shadow-[inset_0_1px_0_#FFFFFF]"
+            >
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="inline-flex items-center gap-1 font-bold text-[#1E1E1E]">
+                  <Sliders className="h-3 w-3 text-[#D97706]" />
+                  <span>Rotation &amp; Scale (Real-Time)</span>
+                </span>
+                <button
+                  type="button"
+                  data-testid="transform-reset-btn"
+                  onClick={() => {
+                    handleScaleChange(1);
+                    handleRotationAngleChange(0);
+                  }}
+                  className="rounded-[2px] border border-[#7A7A76] bg-[#F4F4F0] px-1.5 py-0.5 text-[9px] font-bold text-[#222222] hover:bg-white"
+                >
+                  Reset 1.0x · 0°
+                </button>
+              </div>
+
+              {/* Scale Slider (0.40x - 2.50x) */}
+              <div className="flex items-center gap-1.5 text-[10px]">
+                <span className="w-[42px] shrink-0 font-bold text-[#333333]">
+                  Scale:
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleScaleChange(objectScale - 0.1)}
+                  className="rounded border border-[#7A7A76] bg-white px-1 py-0.5 text-[9px] font-bold hover:bg-amber-100"
+                  title="Decrease scale (-0.1x)"
+                >
+                  -
+                </button>
+                <input
+                  type="range"
+                  min={MIN_OBJECT_SCALE}
+                  max={MAX_OBJECT_SCALE}
+                  step={0.05}
+                  data-testid="admin-scale-slider"
+                  aria-label="Object Scale"
+                  value={objectScale}
+                  onChange={(e) => handleScaleChange(Number(e.target.value))}
+                  className="h-1.5 flex-1 accent-[#D97706] cursor-pointer"
+                />
+                <button
+                  type="button"
+                  onClick={() => handleScaleChange(objectScale + 0.1)}
+                  className="rounded border border-[#7A7A76] bg-white px-1 py-0.5 text-[9px] font-bold hover:bg-amber-100"
+                  title="Increase scale (+0.1x)"
+                >
+                  +
+                </button>
+                <span
+                  data-testid="admin-scale-value"
+                  className="w-[36px] shrink-0 text-right font-mono font-bold text-[#1E1E1E]"
+                >
+                  {objectScale.toFixed(2)}x
+                </span>
+              </div>
+
+              {/* Continuous Rotation Slider (0° - 359°) + Quick Cardinal Snaps */}
+              <div className="flex items-center gap-1.5 text-[10px]">
+                <span className="w-[42px] shrink-0 font-bold text-[#333333]">
+                  Rotate:
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={359}
+                  step={1}
+                  data-testid="admin-rotation-slider"
+                  aria-label="Object Rotation Angle"
+                  value={rotationAngle}
+                  onChange={(e) =>
+                    handleRotationAngleChange(Number(e.target.value))
+                  }
+                  className="h-1.5 flex-1 accent-[#00748C] cursor-pointer"
+                />
+                <span
+                  data-testid="admin-rotation-value"
+                  className="w-[54px] shrink-0 text-right font-mono font-bold text-[#1E1E1E]"
+                >
+                  {rotationAngle}° ({rotation.toUpperCase()})
+                </span>
+              </div>
+
+              {/* Quick 90° Isometric Snap Buttons */}
+              <div className="grid grid-cols-4 gap-1 pt-0.5">
+                {(
+                  [
+                    { rot: 'se', deg: 0, label: '0° SE' },
+                    { rot: 'sw', deg: 90, label: '90° SW' },
+                    { rot: 'nw', deg: 180, label: '180° NW' },
+                    { rot: 'ne', deg: 270, label: '270° NE' },
+                  ] as const
+                ).map((snap) => (
+                  <button
+                    key={snap.rot}
+                    type="button"
+                    onClick={() => handleRotationAngleChange(snap.deg)}
+                    className={`rounded-[2px] border py-0.5 text-[9px] font-bold ${
+                      rotationAngle === snap.deg
+                        ? 'border-black bg-[#00748C] text-white'
+                        : 'border-[#8E8E8A] bg-[#ECECE8] text-[#333333] hover:bg-white'
+                    }`}
+                  >
+                    {snap.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* 3. Palette Section */}
+            <div className="space-y-1">
+              <div className="flex items-center justify-between px-0.5">
+                <span className="text-[11px] font-medium text-[#222222]">
+                  Palette
+                </span>
+                {/* Clean Placement Rule Toggle (1/Tile vs Stack) */}
+                <div className="flex items-center gap-1 text-[10px]">
+                  <button
+                    type="button"
+                    data-testid="placement-mode-replace"
+                    onClick={() => setPlacementMode('replace')}
+                    className={`rounded-[2px] border px-1.5 py-0.5 font-bold ${
+                      placementMode === 'replace'
+                        ? 'border-black bg-[#D49A2A] text-white'
+                        : 'border-[#8E8E8A] bg-[#D6D6D2] text-[#333333]'
+                    }`}
+                  >
+                    1/Tile
+                  </button>
+                  <button
+                    type="button"
+                    data-testid="placement-mode-stack"
+                    onClick={() => setPlacementMode('stack')}
+                    className={`rounded-[2px] border px-1.5 py-0.5 font-bold ${
+                      placementMode === 'stack'
+                        ? 'border-black bg-[#00748C] text-white'
+                        : 'border-[#8E8E8A] bg-[#D6D6D2] text-[#333333]'
+                    }`}
+                  >
+                    Stack
+                  </button>
+                </div>
+              </div>
+
+              <div className="rounded-[2px] border border-[#8E8E8A] bg-[#CCCCCC] p-1.5 shadow-[inset_0_1px_2px_rgba(0,0,0,0.18)]">
+                <div className="grid grid-cols-11 gap-[3px]">
+                  {HABBO_BC_PALETTE.map((hex, idx) => {
+                    const isPicked =
+                      colorVariant.toLowerCase() === hex.toLowerCase();
+                    return (
+                      <button
+                        key={`${hex}-${idx}`}
+                        type="button"
+                        onClick={() => {
+                          setColorVariant(hex);
+                          if (selectedInventoryItemId) {
+                            updateInventoryItemTransform(
+                              selectedInventoryItemId,
+                              { colorVariant: hex }
+                            );
+                          }
+                          if (activeFloorObj) {
+                            updateObjectTransform(activeFloorObj.id, {
+                              colorVariant: hex,
+                            });
+                          }
+                        }}
+                        title={`Color ${hex}`}
+                        className={`h-[14px] w-full rounded-[2px] border ${
+                          isPicked
+                            ? 'border-black ring-1 ring-black scale-110 z-10'
+                            : 'border-[#666662] hover:border-black'
+                        }`}
+                        style={{ backgroundColor: hex }}
+                      />
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* 4. Helper Hint + Classic Gold & Teal Habbo Action Buttons */}
+            <div className="pt-0.5 space-y-1.5">
+              <div className="text-[11px] text-[#222222] px-0.5">
+                Drag or click furni to place them in the room!
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  data-testid="admin-place-furni-btn"
+                  onClick={() => {
+                    placeFurnitureAtTile(
+                      {
+                        type: selectedType,
+                        label: objectLabel,
+                        colorVariant,
+                        rotation,
+                        rotationAngle,
+                        scale: objectScale,
+                        inventoryItemId: selectedInventoryItemId || undefined,
+                        projectId: linkedProjectId,
+                        videoUrl:
+                          selectedType === 'youtube_tv'
+                            ? tvVideoUrlInput
+                            : undefined,
+                      },
+                      coordX,
+                      coordY
+                    );
+                  }}
+                  className="h-[28px] rounded-[3px] border-2 border-black bg-[#D49A2A] px-2 text-[11px] font-bold text-white hover:bg-[#E3A836] active:translate-y-[1px] shadow-[inset_0_1px_0_#F7CA65] whitespace-nowrap"
+                >
+                  Place Furni
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="click-to-place-toggle"
+                  onClick={() => setClickToPlaceMode((prev) => !prev)}
+                  className={`h-[28px] rounded-[3px] border-2 border-black px-2 text-[11px] font-bold text-white active:translate-y-[1px] whitespace-nowrap ${
+                    clickToPlaceMode
+                      ? 'bg-[#00748C] hover:bg-[#0089A6] shadow-[inset_0_1px_0_#38BDF8]'
+                      : 'bg-[#52524E] hover:bg-[#666662] shadow-[inset_0_1px_0_#999995]'
+                  }`}
+                >
+                  Click to Place
+                </button>
+              </div>
+
+              {/* 4b. Wall Poster Studio & Custom Photo Uploader */}
+              {(isWallPosterType(selectedType) ||
+                (activeFloorObj && isWallPosterType(activeFloorObj.type))) && (
+                <div
+                  data-testid="admin-wall-poster-panel"
+                  className="mt-1.5 rounded-[3px] border border-[#8E8E8A] bg-[#D6D6D2] p-2 space-y-1.5"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-1 text-[10px] font-bold text-[#1E1E1E]">
+                      <ImageIcon className="h-3 w-3 text-[#16A34A]" />
+                      <span>Wall Poster Studio (Auto-Saved)</span>
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => handleRotationAngleChange(90)}
+                        className="rounded border border-black bg-[#2B2827] px-1.5 py-0.5 text-[8px] font-bold text-white hover:bg-black"
+                        title="Mount flush on Left Brick Wall"
+                      >
+                        Left Wall
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleRotationAngleChange(0)}
+                        className="rounded border border-black bg-[#00748C] px-1.5 py-0.5 text-[8px] font-bold text-white hover:bg-[#0089A6]"
+                        title="Mount flush on Right Brick Wall"
+                      >
+                        Right Wall
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Quick Switch between the 3 Featured Posters */}
+                  <div className="grid grid-cols-3 gap-1">
+                    {(
+                      [
+                        {
+                          type: 'poster_raja_gb05',
+                          short: 'Green Boys 05',
+                          col: '#16A34A',
+                        },
+                        {
+                          type: 'poster_wydad_winners',
+                          short: 'Wydad Winners',
+                          col: '#DC2626',
+                        },
+                        {
+                          type: 'poster_chelsea',
+                          short: 'Chelsea #20',
+                          col: '#1D4ED8',
+                        },
+                      ] as const
+                    ).map((p) => (
+                      <button
+                        key={p.type}
+                        type="button"
+                        data-testid={`poster-preset-${p.type}`}
+                        onClick={() => {
+                          handleSelectObjectType(p.type);
+                          if (
+                            activeFloorObj &&
+                            isWallPosterType(activeFloorObj.type)
+                          ) {
+                            updateObjectTransform(activeFloorObj.id, {
+                              label: HABBO_ENGLISH_NAMES[p.type],
+                              colorVariant: p.col,
+                              imageUrl: DEFAULT_POSTER_IMAGES[p.type],
+                            });
+                            setStatusToast(
+                              `Updated wall poster to ${HABBO_ENGLISH_NAMES[p.type]} (Auto-saved)!`
+                            );
+                          }
+                        }}
+                        className={`rounded-[2px] border px-1.5 py-1 text-[9px] font-bold text-white truncate ${
+                          selectedType === p.type
+                            ? 'border-black ring-1 ring-black'
+                            : 'border-black/50 opacity-85 hover:opacity-100'
+                        }`}
+                        style={{ backgroundColor: p.col }}
+                      >
+                        {p.short}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Upload Exact Photo File from Device (Converts to Data URL & Auto-Saves) */}
+                  <div className="flex items-center gap-1">
+                    <label
+                      data-testid="poster-upload-label"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-[2px] border border-black bg-[#15803D] px-2 py-1 text-[9px] font-bold text-white hover:bg-[#16A34A] cursor-pointer"
+                    >
+                      <Upload className="h-2.5 w-2.5" />
+                      <span>Upload Photo</span>
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            const dataUrl =
+                              typeof reader.result === 'string'
+                                ? reader.result
+                                : '';
+                            if (!dataUrl) return;
+                            setPosterImageUrlInput(dataUrl);
+                            if (
+                              activeFloorObj &&
+                              isWallPosterType(activeFloorObj.type)
+                            ) {
+                              updateObjectTransform(activeFloorObj.id, {
+                                imageUrl: dataUrl,
+                              });
+                              setStatusToast(
+                                `Uploaded photo to ${activeFloorObj.label} (Auto-saved)!`
+                              );
+                            } else {
+                              setStatusToast(
+                                'Custom photo loaded! Click Place Furni or a wall tile.'
+                              );
+                            }
+                          };
+                          reader.readAsDataURL(file);
+                        }}
+                      />
+                    </label>
+
+                    <input
+                      type="text"
+                      value={
+                        posterImageUrlInput.startsWith('data:')
+                          ? ''
+                          : posterImageUrlInput
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPosterImageUrlInput(val);
+                        if (
+                          val.trim() &&
+                          activeFloorObj &&
+                          isWallPosterType(activeFloorObj.type)
+                        ) {
+                          updateObjectTransform(activeFloorObj.id, {
+                            imageUrl: val.trim(),
+                          });
+                        }
+                      }}
+                      placeholder="Or paste custom image URL..."
+                      className="flex-1 min-w-0 rounded-[2px] border border-[#7A7A76] bg-white px-1.5 py-1 text-[9px] text-black placeholder:text-[#888888] focus:border-black focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* 5. 3D YouTube TV Programmer Box inside Floor Studio */}
+              <form
+                onSubmit={handleProgramTvUrl}
+                data-testid="admin-tv-program-panel"
+                className="mt-1.5 rounded-[3px] border border-[#8E8E8A] bg-[#D6D6D2] p-2 space-y-1.5"
+              >
+                <div className="flex items-center justify-between">
+                  <label
+                    htmlFor="admin-tv-url-input"
+                    className="flex items-center gap-1 text-[10px] font-bold text-[#1E1E1E]"
+                  >
+                    <Tv className="h-3 w-3 text-[#C93B2B]" />
+                    <span>Program 3D YouTube TV (Shared Live)</span>
+                  </label>
+                  <span className="rounded bg-[#C93B2B] px-1 py-0.5 text-[8px] font-bold uppercase text-white">
+                    284×102 Cinema Wall
+                  </span>
+                </div>
+                <div className="flex items-center gap-1">
+                  <input
+                    id="admin-tv-url-input"
+                    data-testid="admin-tv-url-input"
+                    type="text"
+                    value={tvVideoUrlInput}
+                    onChange={(e) => {
+                      setTvVideoUrlInput(e.target.value);
+                      setTvUrlError(null);
+                    }}
+                    placeholder="Paste YouTube link (e.g. https://youtu.be/...)"
+                    className="flex-1 min-w-0 rounded-[2px] border border-[#7A7A76] bg-white px-2 py-1 text-[10px] text-black placeholder:text-[#888888] focus:border-black focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    data-testid="admin-tv-url-submit"
+                    className="shrink-0 rounded-[2px] border border-black bg-[#C93B2B] px-2.5 py-1 text-[10px] font-bold text-white hover:bg-[#E04836]"
+                  >
+                    Broadcast
+                  </button>
+                </div>
+                {tvUrlError && (
+                  <div
+                    role="alert"
+                    data-testid="admin-tv-url-error"
+                    className="text-[10px] font-bold text-[#991B1B]"
+                  >
+                    {tvUrlError}
+                  </div>
+                )}
+              </form>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      {/* RIGHT VIEWPORT: LIVE ISOMETRIC ROOM ON PURE BLACK BACKGROUND */}
+      <main className="relative flex-1 w-full min-h-[540px] lg:min-h-[calc(100vh-24px)] flex flex-col items-center justify-between bg-black overflow-hidden">
+        {/* Top-Right Classic Habbo Mini HUD & Roaming Animals Manager */}
+        <div className="w-full flex flex-wrap items-start justify-between gap-2 px-2 pt-1 z-10">
+          {/* Active Animals Control Panel (Admin can remove individual animals or all animals) */}
+          <div
+            data-testid="admin-animals-panel"
+            className="flex flex-wrap items-center gap-1.5 rounded-[4px] border-2 border-black bg-[#2B2827] px-2.5 py-1.5 text-[11px] text-white shadow"
+          >
+            <span className="font-bold text-[#FACC15]">
+              Room Animals ({pets.length}):
+            </span>
+            {pets.length > 0 ? (
+              pets.map((pet) => (
+                <button
+                  key={pet.id}
+                  type="button"
+                  data-testid={`admin-remove-pet-${pet.id}`}
+                  onClick={() => {
+                    removePet(pet.id);
+                    setStatusToast(`Removed ${pet.name} from the room!`);
+                  }}
+                  title={`Remove ${pet.name} from the room`}
+                  className="inline-flex items-center gap-1 rounded-[3px] border border-black bg-[#4A4745] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#C93B2B] transition-colors"
+                >
+                  <span>{pet.name}</span>
+                  <Trash2 className="h-3 w-3 text-rose-300" />
+                </button>
+              ))
+            ) : (
+              <span className="text-[10px] text-[#CCCCCC]">
+                No roaming animals
+              </span>
+            )}
+
+            {pets.length > 0 && (
+              <button
+                type="button"
+                data-testid="admin-clear-all-pets"
+                onClick={() => {
+                  clearAllPets();
+                  setStatusToast('All animals removed from the room!');
+                }}
+                className="inline-flex items-center gap-1 rounded-[3px] border border-black bg-[#C93B2B] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#E04836]"
+              >
+                <Trash2 className="h-3 w-3" />
+                <span>Remove All Animals</span>
+              </button>
+            )}
+
+            {pets.length < 4 && (
+              <button
+                type="button"
+                data-testid="admin-restore-pets"
+                onClick={() => {
+                  restoreDefaultPets();
+                  setStatusToast('All room animals restored!');
+                }}
+                className="inline-flex items-center gap-1 rounded-[3px] border border-black bg-[#00748C] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#0089A6]"
+              >
+                <RotateCcw className="h-3 w-3" />
+                <span>Restore Animals</span>
+              </button>
+            )}
+          </div>
+
+          {/* Right-side Habbo HUD Pill + Live Auto-Save Status */}
+          <div className="flex items-center gap-2">
+            <div
+              data-testid="admin-autosave-indicator"
+              className="rounded-[4px] border border-emerald-500/60 bg-[#062C1E] px-2.5 py-1 text-[10px] font-bold text-emerald-300 shadow"
+            >
+              {isSaving
+                ? 'Auto-saving...'
+                : lastSavedAt
+                  ? 'All changes auto-saved ✓'
+                  : 'Auto-Save ON ✓'}
+            </div>
+            {statusToast && (
+              <div
+                role="status"
+                data-testid="admin-placement-feedback"
+                className="rounded-[4px] border border-black bg-white px-2.5 py-1 text-[11px] font-bold text-black shadow"
+              >
+                {statusToast}
+              </div>
+            )}
+            <Link
+              href="/"
+              className="rounded-[4px] border-2 border-black bg-[#15803D] hover:bg-[#16A34A] px-3 py-1 text-[11px] font-bold text-white shadow-[inset_0_1px_0_#4ADE80]"
+            >
+              View Public Room (/)
+            </Link>
+          </div>
+        </div>
+
+        {/* Center Isometric Room Canvas + Live 3D YouTube TV Screen Overlay */}
+        <div className="relative flex-1 w-full flex items-center justify-center my-auto">
+          <div className="relative w-full max-w-[760px]">
+            <canvas
+              ref={previewCanvasRef}
+              data-testid="admin-iso-drop-canvas"
+              onMouseMove={handleCanvasMouseMove}
+              onMouseLeave={() => setCanvasHoverTile(null)}
+              onDragOver={handleCanvasDragOver}
+              onDragLeave={() => setDropHoverTile(null)}
+              onDrop={handleCanvasDrop}
+              onClick={handleCanvasClick}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                const tile = resolveTileFromPointer(e.clientX, e.clientY);
+                if (!tile) return;
+                const topObj = getTopObjectAtTile(tile.x, tile.y, objects);
+                if (topObj) {
+                  removeObject(topObj.id);
+                  setSelectedPlacedObjectId(null);
+                  setStatusToast(
+                    `Removed ${HABBO_ENGLISH_NAMES[topObj.type] || topObj.label} from (${tile.x}, ${tile.y})!`
+                  );
+                }
+              }}
+              className="w-full h-auto cursor-pointer block"
+              style={{ imageRendering: 'pixelated' }}
+            />
+            <IsometricYoutubeTvOverlay
+              objects={objects}
+              originX={LOGICAL_ORIGIN_X}
+              originY={LOGICAL_ORIGIN_Y}
+              scale={canvasDisplayScale}
+              onSelectTv={(tv) => {
+                setSelectedPlacedObjectId(tv.id);
+                setCoordX(tv.x);
+                setCoordY(tv.y);
+                setObjectScale(clampObjectScale(tv.scale));
+                setRotation(tv.rotation);
+                setRotationAngle(
+                  normalizeRotationAngle(tv.rotationAngle, tv.rotation)
+                );
+                if (tv.videoUrl) {
+                  setTvVideoUrlInput(tv.videoUrl);
+                }
+              }}
+            />
+            <IsometricWallPostersOverlay
+              objects={objects}
+              originX={LOGICAL_ORIGIN_X}
+              originY={LOGICAL_ORIGIN_Y}
+              scale={canvasDisplayScale}
+              selectedObjectId={activeFloorObj?.id}
+              onSelectPoster={(poster) => {
+                setSelectedPlacedObjectId(poster.id);
+                setSelectedType(poster.type);
+                setCoordX(poster.x);
+                setCoordY(poster.y);
+                setObjectScale(clampObjectScale(poster.scale));
+                setRotation(poster.rotation);
+                setRotationAngle(
+                  normalizeRotationAngle(poster.rotationAngle, poster.rotation)
+                );
+                if (poster.imageUrl) {
+                  setPosterImageUrlInput(poster.imageUrl);
+                }
+                pixelAudio.playConsoleClick();
+              }}
+            />
+
+            {/* Interactive On-Canvas Drag Handles (Scale & Rotation Gizmo) for Selected Floor Object */}
+            {activeFloorObj &&
+              (() => {
+                const gizmo = getObjectTransformGizmoScreenCoords(
+                  activeFloorObj,
+                  LOGICAL_ORIGIN_X,
+                  LOGICAL_ORIGIN_Y
+                );
+                const centerLeft = gizmo.centerX * canvasDisplayScale;
+                const centerTop = gizmo.centerY * canvasDisplayScale;
+                const scaleLeft = gizmo.scaleHandleX * canvasDisplayScale;
+                const scaleTop = gizmo.scaleHandleY * canvasDisplayScale;
+                const rotLeft = gizmo.rotateHandleX * canvasDisplayScale;
+                const rotTop = gizmo.rotateHandleY * canvasDisplayScale;
+                const curScale = clampObjectScale(activeFloorObj.scale);
+                const curAngle = normalizeRotationAngle(
+                  activeFloorObj.rotationAngle,
+                  activeFloorObj.rotation
+                );
+
+                return (
+                  <div
+                    data-testid="canvas-transform-gizmo"
+                    className="pointer-events-none absolute inset-0 z-20 overflow-hidden"
+                  >
+                    {/* Dashed Orbit Ring around Selected Floor Object */}
+                    <div
+                      style={{
+                        left: `${centerLeft}px`,
+                        top: `${centerTop}px`,
+                        width: `${Math.round(64 * curScale * canvasDisplayScale)}px`,
+                        height: `${Math.round(36 * curScale * canvasDisplayScale)}px`,
+                      }}
+                      className="pointer-events-none absolute -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-dashed border-amber-400/80 shadow-[0_0_10px_rgba(250,204,21,0.4)]"
+                    />
+
+                    {/* Drag Handle 1: Scale Handle (Top Anchor) */}
+                    <button
+                      type="button"
+                      data-testid="canvas-gizmo-scale-handle"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        const rect =
+                          previewCanvasRef.current?.getBoundingClientRect();
+                        setGizmoDragState({
+                          mode: 'scale',
+                          objectId: activeFloorObj.id,
+                          startClientX: e.clientX,
+                          startClientY: e.clientY,
+                          initialScale: curScale,
+                          centerClientX: (rect?.left ?? 0) + centerLeft,
+                          centerClientY: (rect?.top ?? 0) + centerTop,
+                        });
+                      }}
+                      style={{
+                        left: `${scaleLeft}px`,
+                        top: `${scaleTop}px`,
+                      }}
+                      title={`Drag up/down to scale ${activeFloorObj.label} (${curScale.toFixed(2)}x)`}
+                      className="pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-full border-2 border-black bg-[#FACC15] text-black shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:scale-110 active:scale-95 cursor-ns-resize"
+                    >
+                      <Maximize2 className="h-3 w-3 stroke-[2.5]" />
+                    </button>
+
+                    {/* Drag Handle 2: Rotation Orbit Handle (Right Anchor) */}
+                    <button
+                      type="button"
+                      data-testid="canvas-gizmo-rotate-handle"
+                      onPointerDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        const rect =
+                          previewCanvasRef.current?.getBoundingClientRect();
+                        setGizmoDragState({
+                          mode: 'rotate',
+                          objectId: activeFloorObj.id,
+                          startClientX: e.clientX,
+                          startClientY: e.clientY,
+                          initialScale: curScale,
+                          centerClientX: (rect?.left ?? 0) + centerLeft,
+                          centerClientY: (rect?.top ?? 0) + centerTop,
+                        });
+                      }}
+                      style={{
+                        left: `${rotLeft}px`,
+                        top: `${rotTop}px`,
+                      }}
+                      title={`Drag around object to rotate ${activeFloorObj.label} (${curAngle}°)`}
+                      className="pointer-events-auto absolute -translate-x-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-full border-2 border-black bg-[#38BDF8] text-black shadow-[0_2px_6px_rgba(0,0,0,0.85)] hover:scale-110 active:scale-95 cursor-grab active:cursor-grabbing"
+                    >
+                      <RotateCw className="h-3 w-3 stroke-[2.5]" />
+                    </button>
+
+                    {/* Live Readout Pill underneath Selected Object */}
+                    <div
+                      style={{
+                        left: `${centerLeft}px`,
+                        top: `${centerTop + Math.round(24 * curScale * canvasDisplayScale)}px`,
+                      }}
+                      className="pointer-events-none absolute -translate-x-1/2 rounded-[3px] border border-black bg-black/85 px-1.5 py-0.5 font-mono text-[9px] font-bold text-amber-300 whitespace-nowrap shadow"
+                    >
+                      {curScale.toFixed(2)}x · {curAngle}° (
+                      {activeFloorObj.rotation.toUpperCase()})
+                    </div>
+                  </div>
+                );
+              })()}
+          </div>
+        </div>
+
+        {/* Bottom Classic Habbo Selected Furni Action Bar */}
+        <div className="w-full max-w-[740px] flex flex-wrap items-center justify-center gap-2 pb-2 px-2 z-10">
+          {objects.length > 0 && (
+            <select
+              aria-label="Select placed furniture item"
+              data-testid="admin-placed-furni-select"
+              value={activeFloorObj?.id || ''}
+              onChange={(e) => {
+                const picked = objects.find((o) => o.id === e.target.value);
+                if (picked) {
+                  setSelectedPlacedObjectId(picked.id);
+                  setCoordX(picked.x);
+                  setCoordY(picked.y);
+                  setObjectScale(clampObjectScale(picked.scale));
+                  setRotation(picked.rotation);
+                  setRotationAngle(
+                    normalizeRotationAngle(picked.rotationAngle, picked.rotation)
+                  );
+                }
+              }}
+              className="h-[30px] rounded-[4px] border-2 border-black bg-[#E2E2DE] px-2 text-[11px] font-bold text-black focus:outline-none"
+            >
+              <option value="" disabled>
+                Select Furni ({objects.length} in room)...
+              </option>
+              {objects.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {HABBO_ENGLISH_NAMES[o.type] || o.label} ({o.x},{o.y}) ·{' '}
+                  {o.rotation.toUpperCase()}
+                </option>
+              ))}
+            </select>
+          )}
+
+          {activeFloorObj ? (
+            <div className="flex flex-wrap items-center gap-1.5 rounded-[5px] border-2 border-black bg-[#2B2827] px-3 py-1.5 text-[11px] text-white shadow-lg">
+              <span className="font-bold text-[#FACC15] mr-1">
+                {HABBO_ENGLISH_NAMES[activeFloorObj.type] ||
+                  activeFloorObj.label}{' '}
+                ({activeFloorObj.x},{activeFloorObj.y})
+              </span>
+
+              <button
+                type="button"
+                onClick={() => handleNudgePlacedObject(activeFloorObj.id, -1, 0)}
+                title="Move North-West"
+                className="rounded border border-black bg-[#4A4745] p-1 hover:bg-[#666260]"
+              >
+                <ArrowLeft className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleNudgePlacedObject(activeFloorObj.id, 0, -1)}
+                title="Move North-East"
+                className="rounded border border-black bg-[#4A4745] p-1 hover:bg-[#666260]"
+              >
+                <ArrowUp className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleNudgePlacedObject(activeFloorObj.id, 0, 1)}
+                title="Move South-West"
+                className="rounded border border-black bg-[#4A4745] p-1 hover:bg-[#666260]"
+              >
+                <ArrowDown className="h-3 w-3" />
+              </button>
+              <button
+                type="button"
+                onClick={() => handleNudgePlacedObject(activeFloorObj.id, 1, 0)}
+                title="Move South-East"
+                className="rounded border border-black bg-[#4A4745] p-1 hover:bg-[#666260]"
+              >
+                <ArrowRight className="h-3 w-3" />
+              </button>
+
+              {/* Elevation Z Controls */}
+              <button
+                type="button"
+                onClick={() => updateObjectZ(activeFloorObj.id, -1)}
+                title="Lower Elevation (Z - 1)"
+                className="rounded border border-black bg-[#4A4745] px-1.5 py-0.5 text-[10px] font-bold hover:bg-[#666260]"
+              >
+                Z-
+              </button>
+              <button
+                type="button"
+                onClick={() => updateObjectZ(activeFloorObj.id, 1)}
+                title="Raise Elevation (Z + 1)"
+                className="rounded border border-black bg-[#4A4745] px-1.5 py-0.5 text-[10px] font-bold hover:bg-[#666260]"
+              >
+                Z+ ({activeFloorObj.z})
+              </button>
+
+              {/* Inline Floor Object Scale Slider */}
+              <div className="flex items-center gap-1 rounded border border-black bg-[#1E1C1B] px-2 py-0.5">
+                <span className="text-[9px] font-bold text-[#FACC15]">
+                  Scale
+                </span>
+                <input
+                  type="range"
+                  min={MIN_OBJECT_SCALE}
+                  max={MAX_OBJECT_SCALE}
+                  step={0.05}
+                  data-testid="floor-object-scale-slider"
+                  aria-label="Selected floor object scale"
+                  value={clampObjectScale(activeFloorObj.scale)}
+                  onChange={(e) => {
+                    const nextS = clampObjectScale(Number(e.target.value));
+                    setObjectScale(nextS);
+                    updateObjectTransform(activeFloorObj.id, { scale: nextS });
+                  }}
+                  className="h-1.5 w-16 accent-[#FACC15] cursor-pointer"
+                />
+                <span className="font-mono text-[9px] text-white">
+                  {clampObjectScale(activeFloorObj.scale).toFixed(2)}x
+                </span>
+              </div>
+
+              {/* Inline Floor Object Rotation Slider */}
+              <div className="flex items-center gap-1 rounded border border-black bg-[#1E1C1B] px-2 py-0.5">
+                <span className="text-[9px] font-bold text-[#38BDF8]">
+                  Rot
+                </span>
+                <input
+                  type="range"
+                  min={0}
+                  max={359}
+                  step={1}
+                  data-testid="floor-object-rotation-slider"
+                  aria-label="Selected floor object rotation angle"
+                  value={normalizeRotationAngle(
+                    activeFloorObj.rotationAngle,
+                    activeFloorObj.rotation
+                  )}
+                  onChange={(e) => {
+                    const deg = normalizeRotationAngle(Number(e.target.value));
+                    const card = angleToIsometricRotation(deg);
+                    setRotationAngle(deg);
+                    setRotation(card);
+                    updateObjectTransform(activeFloorObj.id, {
+                      rotation: card,
+                      rotationAngle: deg,
+                    });
+                  }}
+                  className="h-1.5 w-16 accent-[#38BDF8] cursor-pointer"
+                />
+                <span className="font-mono text-[9px] text-white">
+                  {normalizeRotationAngle(
+                    activeFloorObj.rotationAngle,
+                    activeFloorObj.rotation
+                  )}
+                  °
+                </span>
+              </div>
+
+              <button
+                type="button"
+                data-testid="floor-object-rotate-360"
+                onClick={() => rotateObject(activeFloorObj.id, 1)}
+                className="inline-flex items-center gap-1 rounded border border-black bg-[#00748C] px-2 py-0.5 font-bold text-white hover:bg-[#0089A6]"
+              >
+                <RotateCw className="h-3 w-3" />
+                <span>90° ({activeFloorObj.rotation.toUpperCase()})</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="floor-object-stow-inventory"
+                onClick={() => {
+                  pickupObjectToInventory(activeFloorObj.id);
+                  setSelectedPlacedObjectId(null);
+                  setStatusToast(
+                    `Returned ${HABBO_ENGLISH_NAMES[activeFloorObj.type] || activeFloorObj.label} to Inventory!`
+                  );
+                }}
+                className="inline-flex items-center gap-1 rounded border border-black bg-[#15803D] px-2 py-0.5 font-bold text-white hover:bg-[#16A34A]"
+                title="Pick up from floor and return to your Inventory stock"
+              >
+                <Package className="h-3 w-3" />
+                <span>Stow to Inv</span>
+              </button>
+
+              <button
+                type="button"
+                data-testid="floor-object-remove"
+                onClick={() => {
+                  removeObject(activeFloorObj.id);
+                  setSelectedPlacedObjectId(null);
+                  setStatusToast('Furni picked up and removed!');
+                }}
+                className="inline-flex items-center gap-1 rounded border border-black bg-[#C93B2B] px-2 py-0.5 font-bold text-white hover:bg-[#E04836]"
+              >
+                <Trash2 className="h-3 w-3" />
+                <span>Delete</span>
+              </button>
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 rounded-[5px] border-2 border-black bg-[#D6D6D2] px-3 py-1.5 text-[11px] text-[#222222] shadow">
+              <span className="font-bold">Tile ({coordX}, {coordY})</span>
+              <span>·</span>
+              <span>
+                Click any floor tile or drag a furni item from the Warehouse.
+              </span>
+            </div>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}

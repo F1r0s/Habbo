@@ -1,0 +1,2329 @@
+import {
+  GRID_SIZE,
+  TILE_WIDTH,
+  TILE_HEIGHT,
+  RoomObject,
+  ProjectLink,
+  ChatBubble,
+  GridCoord,
+  IsometricRotation,
+  TimeOfDayTheme,
+  VisitorAvatarProfile,
+  InventoryStackLayer,
+  OBJECT_CATALOG,
+  DEFAULT_POSTER_IMAGES,
+  isWallPosterType,
+  gridToScreen,
+  sortObjectsForRender,
+  computeTimeOfDayTheme,
+  extractYouTubeVideoId,
+  clampObjectScale,
+  normalizeRotationAngle,
+  angleToIsometricRotation,
+  rotationToAngle,
+} from './room-engine';
+import { getHabboSpriteAtlas } from './habbo-sprites';
+
+export const TV_SCREEN_WIDTH_PX = 284;
+export const TV_SCREEN_HEIGHT_PX = 102;
+export const TV_SCREEN_CENTER_OFFSET_Y = -60;
+
+export const POSTER_BASE_WIDTH_PX = 92;
+export const POSTER_BASE_HEIGHT_PX = 82;
+export const POSTER_WALL_OFFSET_Y = -56;
+
+const posterImageCache: Record<string, HTMLImageElement> = {};
+
+function getCachedPosterImage(src?: string): HTMLImageElement | null {
+  if (!src || typeof window === 'undefined') return null;
+  if (posterImageCache[src]) {
+    return posterImageCache[src].complete ? posterImageCache[src] : null;
+  }
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  posterImageCache[src] = img;
+  return img.complete ? img : null;
+}
+
+export function getWallPosterScreenAnchor(
+  poster: Pick<RoomObject, 'x' | 'y' | 'z' | 'rotation'>,
+  originX: number,
+  originY: number
+): { sx: number; sy: number } {
+  return gridToScreen(poster.x, poster.y, poster.z, originX, originY);
+}
+
+/**
+ * Resolves the screen anchor (sx, sy) for the giant 3D Wall Cinema TV so that when mounted
+ * along the right brick wall (or left brick wall) it aligns with the full wall rectangle.
+ */
+export function getTvWallScreenAnchor(
+  tv: Pick<RoomObject, 'x' | 'y' | 'z' | 'rotation'>,
+  originX: number,
+  originY: number
+): { sx: number; sy: number } {
+  const isRightWallAligned = tv.rotation === 'se' || tv.rotation === 'nw';
+  if (isRightWallAligned && tv.y <= 1) {
+    return gridToScreen(5, 0, tv.z, originX, originY);
+  }
+  if (!isRightWallAligned && tv.x <= 1) {
+    return gridToScreen(0, 5, tv.z, originX, originY);
+  }
+  return gridToScreen(tv.x, tv.y, tv.z, originX, originY);
+}
+
+export interface GhostPlacementPreview {
+  type: RoomObject['type'];
+  label: string;
+  x: number;
+  y: number;
+  z: number;
+  rotation: IsometricRotation;
+  rotationAngle?: number;
+  scale?: number;
+  colorVariant?: string;
+  projectId?: string;
+  stackLayers?: InventoryStackLayer[];
+}
+
+export function getObjectTransformGizmoScreenCoords(
+  obj: Pick<RoomObject, 'x' | 'y' | 'z' | 'scale'>,
+  originX: number,
+  originY: number
+): {
+  centerX: number;
+  centerY: number;
+  scaleHandleX: number;
+  scaleHandleY: number;
+  rotateHandleX: number;
+  rotateHandleY: number;
+} {
+  const { sx, sy } = gridToScreen(obj.x, obj.y, obj.z, originX, originY);
+  const objScale = clampObjectScale(obj.scale);
+  const centerX = sx;
+  const centerY = sy + TILE_HEIGHT / 2;
+  const radiusX = Math.round(30 * objScale);
+  const radiusY = Math.round(22 * objScale);
+  return {
+    centerX,
+    centerY,
+    scaleHandleX: centerX,
+    scaleHandleY: centerY - Math.round(34 * objScale),
+    rotateHandleX: centerX + radiusX + 6,
+    rotateHandleY: centerY - Math.round(radiusY * 0.25),
+  };
+}
+
+export interface RenderRoomParams {
+  ctx: CanvasRenderingContext2D;
+  width: number;
+  height: number;
+  originX: number;
+  originY: number;
+  objects: RoomObject[];
+  projects: ProjectLink[];
+  chatBubbles: ChatBubble[];
+  avatarPos: { x: number; y: number };
+  avatarFacing: IsometricRotation;
+  isAvatarWalking: boolean;
+  isAvatarSitting?: boolean;
+  hoveredTile: GridCoord | null;
+  selectedTile?: GridCoord | null;
+  hoveredObjectId: string | null;
+  selectedObjectId: string | null;
+  tick: number;
+  timeTheme?: TimeOfDayTheme;
+  showGridOverlay?: boolean;
+  ghostObject?: GhostPlacementPreview | null;
+  hideStaticAnimals?: boolean;
+  visitorAvatar?: VisitorAvatarProfile | null;
+}
+
+function drawIsoDiamond(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  fill: string,
+  stroke?: string,
+  lineWidth = 1
+) {
+  const hw = w / 2;
+  const hh = h / 2;
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.lineTo(cx + hw, cy + hh);
+  ctx.lineTo(cx, cy + h);
+  ctx.lineTo(cx - hw, cy + hh);
+  ctx.closePath();
+  ctx.fillStyle = fill;
+  ctx.fill();
+  if (stroke) {
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = lineWidth;
+    ctx.stroke();
+  }
+}
+
+/**
+ * Draws an isometric extruded voxel prism with crisp 1px dark outlines.
+ */
+function drawIsoPrism(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  w: number,
+  h: number,
+  extrudeZ: number,
+  topColor: string,
+  leftColor: string,
+  rightColor: string,
+  strokeColor = '#09090b'
+) {
+  const hw = w / 2;
+  const hh = h / 2;
+  const topY = cy - extrudeZ;
+
+  // Left face
+  ctx.beginPath();
+  ctx.moveTo(cx - hw, topY + hh);
+  ctx.lineTo(cx, topY + h);
+  ctx.lineTo(cx, cy + h);
+  ctx.lineTo(cx - hw, cy + hh);
+  ctx.closePath();
+  ctx.fillStyle = leftColor;
+  ctx.fill();
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Right face
+  ctx.beginPath();
+  ctx.moveTo(cx, topY + h);
+  ctx.lineTo(cx + hw, topY + hh);
+  ctx.lineTo(cx + hw, cy + hh);
+  ctx.lineTo(cx, cy + h);
+  ctx.closePath();
+  ctx.fillStyle = rightColor;
+  ctx.fill();
+  ctx.strokeStyle = strokeColor;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Top diamond
+  drawIsoDiamond(ctx, cx, topY, w, h, topColor, strokeColor, 1);
+}
+
+/**
+ * Draws the classic Habbo red-brick cutaway walls and smooth golden-oak plank floor
+ * matching the reference Habbo room shell.
+ */
+function drawBrickWallsAndFloor(
+  ctx: CanvasRenderingContext2D,
+  originX: number,
+  originY: number,
+  timeTheme: TimeOfDayTheme
+) {
+  const wallHeight = 122;
+  const trimThickness = 9;
+  const roomW = GRID_SIZE * (TILE_WIDTH / 2);
+  const roomH = GRID_SIZE * (TILE_HEIGHT / 2);
+
+  // Back-left wall (along x = 0, y = 0..GRID_SIZE)
+  const blTopX = originX;
+  const blTopY = originY;
+  const blBotX = originX - roomW;
+  const blBotY = originY + roomH;
+
+  // Back-right wall (along y = 0, x = 0..GRID_SIZE)
+  const brBotX = originX + roomW;
+  const brBotY = originY + roomH;
+
+  // Outer drop shadow under the entire room shell (intensity shifts by Time of Day)
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(blBotX - 8, blBotY + 10);
+  ctx.lineTo(originX, originY + roomH * 2 + 16);
+  ctx.lineTo(brBotX + 8, brBotY + 10);
+  ctx.lineTo(originX, originY + 8);
+  ctx.closePath();
+  ctx.fillStyle = `rgba(0, 0, 0, ${timeTheme.shadowAlpha})`;
+  ctx.fill();
+  ctx.restore();
+
+  // --- 1. LEFT BRICK WALL (X = 0) ---
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(blTopX, blTopY - wallHeight);
+  ctx.lineTo(blBotX, blBotY - wallHeight);
+  ctx.lineTo(blBotX, blBotY);
+  ctx.lineTo(blTopX, blTopY);
+  ctx.closePath();
+  ctx.fillStyle = '#B85A46';
+  ctx.fill();
+  ctx.clip();
+
+  // Diagonal mortar lines parallel to the isometric wall slope (-2:1)
+  ctx.strokeStyle = '#8F3E2D';
+  ctx.lineWidth = 1;
+  const brickRows = 15;
+  const rowStep = wallHeight / brickRows;
+  for (let r = 1; r < brickRows; r++) {
+    const dy = r * rowStep;
+    ctx.beginPath();
+    ctx.moveTo(blTopX, blTopY - dy);
+    ctx.lineTo(blBotX, blBotY - dy);
+    ctx.stroke();
+
+    // Staggered vertical brick joints
+    const cols = 10;
+    for (let c = 0; c <= cols; c++) {
+      const t = (c + (r % 2 === 0 ? 0 : 0.5)) / cols;
+      if (t <= 0 || t >= 1) continue;
+      const jx = blTopX + (blBotX - blTopX) * t;
+      const jyBase = blTopY + (blBotY - blTopY) * t;
+      ctx.beginPath();
+      ctx.moveTo(jx, jyBase - dy);
+      ctx.lineTo(jx, jyBase - dy + rowStep);
+      ctx.stroke();
+    }
+  }
+
+  // Subtle lighter brick highlights scattered like Habbo wall texture
+  ctx.fillStyle = '#C96D58';
+  for (let r = 1; r < brickRows - 1; r += 2) {
+    const t = ((r * 3) % 8 + 1) / 10;
+    const bx = blTopX + (blBotX - blTopX) * t;
+    const by = blTopY + (blBotY - blTopY) * t - r * rowStep;
+    ctx.fillRect(bx - 12, by + 2, 10, 4);
+  }
+
+  // Classic Habbo dark doorway cutout on left wall (around y = 6.2..7.8)
+  const doorT1 = 0.62;
+  const doorT2 = 0.78;
+  const dx1 = blTopX + (blBotX - blTopX) * doorT1;
+  const dy1 = blTopY + (blBotY - blTopY) * doorT1;
+  const dx2 = blTopX + (blBotX - blTopX) * doorT2;
+  const dy2 = blTopY + (blBotY - blTopY) * doorT2;
+  const doorH = 74;
+
+  // Doorway recess
+  ctx.beginPath();
+  ctx.moveTo(dx1, dy1 - doorH);
+  ctx.lineTo(dx2, dy2 - doorH);
+  ctx.lineTo(dx2, dy2);
+  ctx.lineTo(dx1, dy1);
+  ctx.closePath();
+  ctx.fillStyle = '#050505';
+  ctx.fill();
+
+  // Inner brick reveal inside doorway
+  ctx.beginPath();
+  ctx.moveTo(dx1, dy1 - doorH);
+  ctx.lineTo(dx1 - 6, dy1 - doorH + 3);
+  ctx.lineTo(dx1 - 6, dy1 + 3);
+  ctx.lineTo(dx1, dy1);
+  ctx.closePath();
+  ctx.fillStyle = '#7C3223';
+  ctx.fill();
+  ctx.strokeStyle = '#000000';
+  ctx.stroke();
+  ctx.restore();
+
+  // Left wall outer stroke
+  ctx.beginPath();
+  ctx.moveTo(blTopX, blTopY - wallHeight);
+  ctx.lineTo(blBotX, blBotY - wallHeight);
+  ctx.lineTo(blBotX, blBotY);
+  ctx.lineTo(blTopX, blTopY);
+  ctx.closePath();
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // --- 2. RIGHT BRICK WALL (Y = 0) ---
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(blTopX, blTopY - wallHeight);
+  ctx.lineTo(brBotX, brBotY - wallHeight);
+  ctx.lineTo(brBotX, brBotY);
+  ctx.lineTo(blTopX, blTopY);
+  ctx.closePath();
+  ctx.fillStyle = '#A44A37';
+  ctx.fill();
+  ctx.clip();
+
+  ctx.strokeStyle = '#7D3222';
+  ctx.lineWidth = 1;
+  for (let r = 1; r < brickRows; r++) {
+    const dy = r * rowStep;
+    ctx.beginPath();
+    ctx.moveTo(blTopX, blTopY - dy);
+    ctx.lineTo(brBotX, brBotY - dy);
+    ctx.stroke();
+
+    const cols = 10;
+    for (let c = 0; c <= cols; c++) {
+      const t = (c + (r % 2 === 1 ? 0 : 0.5)) / cols;
+      if (t <= 0 || t >= 1) continue;
+      const jx = blTopX + (brBotX - blTopX) * t;
+      const jyBase = blTopY + (brBotY - blTopY) * t;
+      ctx.beginPath();
+      ctx.moveTo(jx, jyBase - dy);
+      ctx.lineTo(jx, jyBase - dy + rowStep);
+      ctx.stroke();
+    }
+  }
+
+  // Right wall Habbo sky-blue window with wooden sill (around x = 2.8..4.5)
+  const winT1 = 0.28;
+  const winT2 = 0.45;
+  const wx1 = blTopX + (brBotX - blTopX) * winT1;
+  const wy1 = blTopY + (brBotY - blTopY) * winT1;
+  const wx2 = blTopX + (brBotX - blTopX) * winT2;
+  const wy2 = blTopY + (brBotY - blTopY) * winT2;
+  const winBottomOffset = 28;
+  const winTopOffset = 88;
+
+  // Window sky glass (shifts color with Time of Day: Dawn, Day, Sunset, Night)
+  ctx.beginPath();
+  ctx.moveTo(wx1, wy1 - winTopOffset);
+  ctx.lineTo(wx2, wy2 - winTopOffset);
+  ctx.lineTo(wx2, wy2 - winBottomOffset);
+  ctx.lineTo(wx1, wy1 - winBottomOffset);
+  ctx.closePath();
+  ctx.fillStyle = timeTheme.windowSkyColor;
+  ctx.fill();
+
+  // Nighttime pixel stars / moon glint inside the window
+  if (timeTheme.phase === 'night') {
+    ctx.fillStyle = '#FEF08A';
+    ctx.fillRect(Math.round(wx1 + 10), Math.round(wy1 - 72), 2, 2);
+    ctx.fillRect(Math.round(wx1 + 26), Math.round(wy1 - 58), 2, 2);
+    ctx.fillRect(Math.round(wx1 + 38), Math.round(wy1 - 64), 3, 3);
+  } else if (timeTheme.phase === 'sunset' || timeTheme.phase === 'dawn') {
+    ctx.fillStyle = 'rgba(254, 240, 138, 0.35)';
+    ctx.fillRect(Math.round(wx1 + 8), Math.round(wy1 - 52), 14, 6);
+  }
+
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Window inner white frame + center mullion
+  const wmx = (wx1 + wx2) / 2;
+  const wmy = (wy1 + wy2) / 2;
+  ctx.beginPath();
+  ctx.moveTo(wmx, wmy - winTopOffset);
+  ctx.lineTo(wmx, wmy - winBottomOffset);
+  ctx.strokeStyle = '#DCE8F5';
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // Wooden window sill
+  ctx.beginPath();
+  ctx.moveTo(wx1 - 3, wy1 - winBottomOffset);
+  ctx.lineTo(wx2 + 3, wy2 - winBottomOffset);
+  ctx.lineTo(wx2 + 3, wy2 - winBottomOffset + 6);
+  ctx.lineTo(wx1 - 3, wy1 - winBottomOffset + 6);
+  ctx.closePath();
+  ctx.fillStyle = '#D8B878';
+  ctx.fill();
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.restore();
+
+  // Right wall outer stroke
+  ctx.beginPath();
+  ctx.moveTo(blTopX, blTopY - wallHeight);
+  ctx.lineTo(brBotX, brBotY - wallHeight);
+  ctx.lineTo(brBotX, brBotY);
+  ctx.lineTo(blTopX, blTopY);
+  ctx.closePath();
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // --- 3. 3D HABBO WALL-TOP TRIM CAP (White & Grey Bevel) ---
+  // Left wall top cap
+  ctx.beginPath();
+  ctx.moveTo(blTopX, blTopY - wallHeight - trimThickness);
+  ctx.lineTo(blBotX - trimThickness * 1.6, blBotY - wallHeight - trimThickness * 0.2);
+  ctx.lineTo(blBotX, blBotY - wallHeight);
+  ctx.lineTo(blTopX, blTopY - wallHeight);
+  ctx.closePath();
+  ctx.fillStyle = '#ECECEC';
+  ctx.fill();
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Right wall top cap
+  ctx.beginPath();
+  ctx.moveTo(blTopX, blTopY - wallHeight - trimThickness);
+  ctx.lineTo(brBotX + trimThickness * 1.6, brBotY - wallHeight - trimThickness * 0.2);
+  ctx.lineTo(brBotX, brBotY - wallHeight);
+  ctx.lineTo(blTopX, blTopY - wallHeight);
+  ctx.closePath();
+  ctx.fillStyle = '#D4D4D4';
+  ctx.fill();
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Outer left vertical wall thickness strip
+  ctx.beginPath();
+  ctx.moveTo(blBotX - trimThickness * 1.6, blBotY - wallHeight - trimThickness * 0.2);
+  ctx.lineTo(blBotX, blBotY - wallHeight);
+  ctx.lineTo(blBotX, blBotY + 7);
+  ctx.lineTo(blBotX - trimThickness * 1.6, blBotY);
+  ctx.closePath();
+  ctx.fillStyle = '#8F3E2D';
+  ctx.fill();
+  ctx.strokeStyle = '#000000';
+  ctx.stroke();
+
+  // --- 4. UNIFIED GOLDEN-OAK HABBO FLOOR ---
+  const flTopX = originX;
+  const flTopY = originY;
+  const flRightX = originX + roomW;
+  const flRightY = originY + roomH;
+  const flBotX = originX;
+  const flBotY = originY + roomH * 2;
+  const flLeftX = originX - roomW;
+  const flLeftY = originY + roomH;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(flTopX, flTopY);
+  ctx.lineTo(flRightX, flRightY);
+  ctx.lineTo(flBotX, flBotY);
+  ctx.lineTo(flLeftX, flLeftY);
+  ctx.closePath();
+  ctx.fillStyle = '#DFC184';
+  ctx.fill();
+  ctx.clip();
+
+  // Subtle diagonal wooden plank lines (parallel to top-to-right SE axis, plus staggered plank joints)
+  ctx.strokeStyle = '#C9A86A';
+  ctx.lineWidth = 1;
+  const plankCount = GRID_SIZE * 2;
+  for (let i = 1; i < plankCount; i++) {
+    const t = i / plankCount;
+    // Lines running from left-back wall toward bottom-right edge
+    const sx = flTopX + (flLeftX - flTopX) * t;
+    const sy = flTopY + (flLeftY - flTopY) * t;
+    const ex = flRightX + (flBotX - flRightX) * t;
+    const ey = flRightY + (flBotY - flRightY) * t;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(ex, ey);
+    ctx.stroke();
+
+    // Short cross-plank joints staggered across the floor
+    for (let j = 1; j < GRID_SIZE; j += 2) {
+      const jt = ((j + (i % 3)) % GRID_SIZE) / GRID_SIZE;
+      if (jt <= 0.08 || jt >= 0.92) continue;
+      const jx1 = sx + (ex - sx) * jt;
+      const jy1 = sy + (ey - sy) * jt;
+      const nextT = (i + 1) / plankCount;
+      const sx2 = flTopX + (flLeftX - flTopX) * nextT;
+      const sy2 = flTopY + (flLeftY - flTopY) * nextT;
+      const ex2 = flRightX + (flBotX - flRightX) * nextT;
+      const ey2 = flRightY + (flBotY - flRightY) * nextT;
+      const jx2 = sx2 + (ex2 - sx2) * jt;
+      const jy2 = sy2 + (ey2 - sy2) * jt;
+      ctx.beginPath();
+      ctx.moveTo(jx1, jy1);
+      ctx.lineTo(jx2, jy2);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+
+  // Crisp 1px black outer contour around floor
+  ctx.beginPath();
+  ctx.moveTo(flTopX, flTopY);
+  ctx.lineTo(flRightX, flRightY);
+  ctx.lineTo(flBotX, flBotY);
+  ctx.lineTo(flLeftX, flLeftY);
+  ctx.closePath();
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Front 3D wooden floor slab thickness (7px bevel along bottom-left and bottom-right edges)
+  const slabH = 7;
+  ctx.beginPath();
+  ctx.moveTo(flLeftX, flLeftY);
+  ctx.lineTo(flBotX, flBotY);
+  ctx.lineTo(flBotX, flBotY + slabH);
+  ctx.lineTo(flLeftX, flLeftY + slabH);
+  ctx.closePath();
+  ctx.fillStyle = '#B79658';
+  ctx.fill();
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.moveTo(flBotX, flBotY);
+  ctx.lineTo(flRightX, flRightY);
+  ctx.lineTo(flRightX, flRightY + slabH);
+  ctx.lineTo(flBotX, flBotY + slabH);
+  ctx.closePath();
+  ctx.fillStyle = '#9E7E43';
+  ctx.fill();
+  ctx.strokeStyle = '#000000';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+}
+
+/**
+ * Draws a crisp 1-tile dithered Habbo floor rug snapped to its exact (x, y) diamond tile.
+ */
+function drawHabboRugTile(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  baseColor: string,
+  ditherColor: string,
+  borderColor: string
+) {
+  const w = TILE_WIDTH - 2;
+  const h = TILE_HEIGHT - 1;
+  const topY = sy + 0.5;
+
+  // Outer pixel border diamond
+  drawIsoDiamond(ctx, sx, topY, w, h, borderColor, '#000000', 1);
+  // Middle trim
+  drawIsoDiamond(ctx, sx, topY + 2, w - 8, h - 4, baseColor, borderColor, 1);
+  // Inner dithered woven field
+  drawIsoDiamond(ctx, sx, topY + 4, w - 16, h - 8, ditherColor, baseColor, 1);
+
+  // Pixel weave pattern inside rug
+  ctx.fillStyle = baseColor;
+  const halfW = (w - 22) / 2;
+  const halfH = (h - 11) / 2;
+  const centerY = topY + h / 2;
+  for (let dx = -halfW; dx <= halfW; dx += 5) {
+    for (let dy = -halfH; dy <= halfH; dy += 3) {
+      if (Math.abs(dx) / halfW + Math.abs(dy) / halfH < 0.85) {
+        ctx.fillRect(Math.round(sx + dx), Math.round(centerY + dy), 2, 1);
+      }
+    }
+  }
+}
+
+function drawSpriteWithRotation(
+  ctx: CanvasRenderingContext2D,
+  sprite: HTMLCanvasElement,
+  sx: number,
+  drawY: number,
+  w: number,
+  h: number,
+  rotation: IsometricRotation
+) {
+  ctx.save();
+  const flipH = rotation === 'sw' || rotation === 'ne';
+  const shiftY = rotation === 'nw' || rotation === 'ne' ? -2 : 0;
+  if (flipH) {
+    ctx.translate(Math.round(sx), 0);
+    ctx.scale(-1, 1);
+    ctx.drawImage(sprite, Math.round(-w / 2), Math.round(drawY + shiftY), w, h);
+  } else {
+    ctx.drawImage(
+      sprite,
+      Math.round(sx - w / 2),
+      Math.round(drawY + shiftY),
+      w,
+      h
+    );
+  }
+  // Subtle rear-view shading when rotated to back orientations ('nw' / 'ne')
+  if (rotation === 'nw' || rotation === 'ne') {
+    ctx.fillStyle = 'rgba(15, 23, 42, 0.10)';
+    ctx.fillRect(Math.round(sx - w / 2), Math.round(drawY + shiftY), w, 4);
+  }
+  ctx.restore();
+}
+
+function drawRoomObject(
+  ctx: CanvasRenderingContext2D,
+  obj: RoomObject,
+  originX: number,
+  originY: number,
+  projects: ProjectLink[],
+  isHovered: boolean,
+  isSelected: boolean,
+  tick: number,
+  hideStaticAnimals: boolean = false
+) {
+  // When in the live room with free-roaming animals, skip drawing static dragons on tiles
+  if (hideStaticAnimals && obj.type === 'pet_dragon') {
+    return;
+  }
+
+  const { sx, sy } = gridToScreen(obj.x, obj.y, obj.z, originX, originY);
+  const atlas = getHabboSpriteAtlas();
+
+  const objScale = clampObjectScale(obj.scale);
+  const effectiveRotation: IsometricRotation =
+    typeof obj.rotationAngle === 'number'
+      ? angleToIsometricRotation(obj.rotationAngle)
+      : obj.rotation;
+  const cardinalAngle = rotationToAngle(effectiveRotation);
+  const rawAngle = normalizeRotationAngle(obj.rotationAngle, effectiveRotation);
+  const fineTiltDeg = ((rawAngle - cardinalAngle + 540) % 360) - 180;
+
+  const pivotX = sx;
+  const pivotY = sy + TILE_HEIGHT / 2;
+  const hasCustomTransform =
+    Math.abs(objScale - 1) > 0.01 || Math.abs(fineTiltDeg) > 0.5;
+
+  // Floor rugs (snapped 1:1 to their tile diamond, scaled/tilted if custom transform is set)
+  if (
+    obj.type === 'luxury_rug_pink' ||
+    obj.type === 'luxury_rug_blue' ||
+    obj.type === 'luxury_rug_gold'
+  ) {
+    const defaultColors: Record<
+      string,
+      { base: string; dither: string; border: string }
+    > = {
+      luxury_rug_pink: {
+        base: '#D96B98',
+        dither: '#E68BB2',
+        border: '#6E2543',
+      },
+      luxury_rug_blue: {
+        base: '#3B82C4',
+        dither: '#5CA0DE',
+        border: '#1B3F63',
+      },
+      luxury_rug_gold: {
+        base: '#D4AF37',
+        dither: '#F2D06B',
+        border: '#6B5311',
+      },
+    };
+    const preset = defaultColors[obj.type];
+    const hasCustomColor =
+      obj.colorVariant &&
+      obj.colorVariant.toLowerCase() !== '#f472b6' &&
+      obj.colorVariant.toLowerCase() !== '#38bdf8' &&
+      obj.colorVariant.toLowerCase() !== '#fbbf24';
+
+    ctx.save();
+    if (hasCustomTransform) {
+      ctx.translate(pivotX, pivotY);
+      if (Math.abs(fineTiltDeg) > 0.5) {
+        ctx.rotate((fineTiltDeg * Math.PI) / 180);
+      }
+      ctx.scale(objScale, objScale);
+      ctx.translate(-pivotX, -pivotY);
+    }
+    drawHabboRugTile(
+      ctx,
+      sx,
+      sy,
+      hasCustomColor ? obj.colorVariant! : preset.base,
+      hasCustomColor ? obj.colorVariant! : preset.dither,
+      hasCustomColor ? '#1E293B' : preset.border
+    );
+    ctx.restore();
+    if (isHovered || isSelected) {
+      drawIsoDiamond(
+        ctx,
+        sx,
+        sy + 1,
+        TILE_WIDTH - 4,
+        TILE_HEIGHT - 2,
+        isSelected ? 'rgba(250, 204, 21, 0.28)' : 'rgba(56, 189, 248, 0.22)',
+        isSelected ? '#FACC15' : '#38BDF8',
+        1.5
+      );
+    }
+    return;
+  }
+
+  // Hover or selection highlight ring on the tile
+  if (isHovered || isSelected) {
+    drawIsoDiamond(
+      ctx,
+      sx,
+      sy + 1,
+      (TILE_WIDTH - 4) * objScale,
+      (TILE_HEIGHT - 2) * objScale,
+      isSelected ? 'rgba(250, 204, 21, 0.28)' : 'rgba(56, 189, 248, 0.22)',
+      isSelected ? '#FACC15' : '#38BDF8',
+      1.5
+    );
+  }
+
+  ctx.save();
+  if (hasCustomTransform && obj.type !== 'youtube_tv') {
+    ctx.translate(pivotX, pivotY);
+    if (Math.abs(fineTiltDeg) > 0.5) {
+      ctx.rotate((fineTiltDeg * Math.PI) / 180);
+    }
+    ctx.scale(objScale, objScale);
+    ctx.translate(-pivotX, -pivotY);
+  }
+
+  switch (obj.type) {
+    case 'white_sofa': {
+      const spriteMap: Record<IsometricRotation, HTMLCanvasElement | null> = {
+        se: atlas.whiteSofaSE,
+        sw: atlas.whiteSofaSW,
+        nw: atlas.whiteSofaNW,
+        ne: atlas.whiteSofaNE,
+      };
+      const sprite = spriteMap[effectiveRotation] || atlas.whiteSofaSE;
+      if (sprite) {
+        const sw = 68;
+        const sh = 46;
+        ctx.drawImage(
+          sprite,
+          Math.round(sx - sw / 2),
+          Math.round(sy + TILE_HEIGHT - sh + 3),
+          sw,
+          sh
+        );
+      } else {
+        drawIsoPrism(
+          ctx,
+          sx,
+          sy + 3,
+          52,
+          26,
+          12,
+          '#F8FAFC',
+          '#E2E8F0',
+          '#CBD5E1',
+          '#09090B'
+        );
+      }
+      break;
+    }
+
+    case 'royal_crown_purple':
+    case 'royal_crown_gold': {
+      const isPurple = obj.type === 'royal_crown_purple';
+      const sprite = isPurple ? atlas.crownPurple : atlas.crownGold;
+      if (sprite) {
+        drawSpriteWithRotation(
+          ctx,
+          sprite,
+          sx,
+          sy + TILE_HEIGHT - sprite.height - 2,
+          sprite.width,
+          sprite.height,
+          obj.rotation
+        );
+      } else {
+        drawIsoPrism(
+          ctx,
+          sx,
+          sy + 7,
+          36,
+          18,
+          28,
+          '#F8FAFC',
+          '#E2E8F0',
+          '#CBD5E1',
+          '#09090B'
+        );
+      }
+      break;
+    }
+
+    case 'pet_cat_basket': {
+      // When animals walk around the room, draw the empty wicker pet bed on the floor!
+      const isEmpty =
+        hideStaticAnimals ||
+        (obj.colorVariant === '#d97706' &&
+          obj.label.toLowerCase().includes('spare'));
+      const sprite = isEmpty ? atlas.emptyBasket : atlas.catBasket;
+      if (sprite) {
+        drawSpriteWithRotation(
+          ctx,
+          sprite,
+          sx,
+          sy + TILE_HEIGHT - sprite.height - 1,
+          sprite.width,
+          sprite.height,
+          obj.rotation
+        );
+      } else {
+        drawIsoPrism(
+          ctx,
+          sx,
+          sy + 4,
+          48,
+          24,
+          9,
+          '#B45309',
+          '#92400E',
+          '#78350F',
+          '#09090B'
+        );
+      }
+      break;
+    }
+
+    case 'water_bowl': {
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 10,
+        24,
+        12,
+        5,
+        '#E0F2FE',
+        obj.colorVariant || '#0284C7',
+        '#0369A1',
+        '#000000'
+      );
+      drawIsoDiamond(ctx, sx, sy + 7, 16, 8, '#38BDF8', '#0284C7', 1);
+      ctx.fillStyle = '#FB7185';
+      const treatOffset =
+        obj.rotation === 'sw'
+          ? -3
+          : obj.rotation === 'nw'
+            ? 0
+            : obj.rotation === 'ne'
+              ? 3
+              : -2;
+      ctx.fillRect(Math.round(sx + treatOffset), Math.round(sy + 10), 4, 2);
+      break;
+    }
+
+    case 'pet_dragon': {
+      const bob = Math.round(Math.sin(tick * 0.08) * 2);
+      if (atlas.dragonDraco) {
+        drawSpriteWithRotation(
+          ctx,
+          atlas.dragonDraco,
+          sx,
+          sy + TILE_HEIGHT - atlas.dragonDraco.height - 3 + bob,
+          atlas.dragonDraco.width,
+          atlas.dragonDraco.height,
+          obj.rotation
+        );
+      } else {
+        drawIsoPrism(
+          ctx,
+          sx,
+          sy + 10 + bob,
+          22,
+          11,
+          20,
+          '#EF4444',
+          '#DC2626',
+          '#991B1B',
+          '#09090B'
+        );
+      }
+      break;
+    }
+
+    case 'potted_plant': {
+      if (atlas.noobPlant) {
+        drawSpriteWithRotation(
+          ctx,
+          atlas.noobPlant,
+          sx,
+          sy + TILE_HEIGHT - atlas.noobPlant.height - 2,
+          atlas.noobPlant.width,
+          atlas.noobPlant.height,
+          obj.rotation
+        );
+      } else {
+        drawIsoPrism(
+          ctx,
+          sx,
+          sy + 10,
+          24,
+          12,
+          14,
+          '#F59E0B',
+          '#D97706',
+          '#B45309',
+          '#09090B'
+        );
+      }
+      break;
+    }
+
+    case 'wood_stool': {
+      if (atlas.barrel) {
+        const bw = 40;
+        const bh = 54;
+        drawSpriteWithRotation(
+          ctx,
+          atlas.barrel,
+          sx,
+          sy + TILE_HEIGHT - bh - 1,
+          bw,
+          bh,
+          obj.rotation
+        );
+      } else {
+        drawIsoPrism(
+          ctx,
+          sx,
+          sy + 9,
+          28,
+          14,
+          12,
+          '#D97706',
+          '#B45309',
+          '#92400E',
+          '#09090B'
+        );
+      }
+      break;
+    }
+
+    case 'wood_table': {
+      drawIsoPrism(ctx, sx, sy + 5, 6, 3, 10, '#78350F', '#451A03', '#451A03');
+      drawIsoPrism(
+        ctx,
+        sx - 15,
+        sy + 13,
+        6,
+        3,
+        10,
+        '#78350F',
+        '#451A03',
+        '#451A03'
+      );
+      drawIsoPrism(
+        ctx,
+        sx + 15,
+        sy + 13,
+        6,
+        3,
+        10,
+        '#78350F',
+        '#451A03',
+        '#451A03'
+      );
+      drawIsoPrism(ctx, sx, sy + 21, 6, 3, 10, '#78350F', '#451A03', '#451A03');
+      const topTint =
+        obj.colorVariant && obj.colorVariant !== '#9a5b3e'
+          ? obj.colorVariant
+          : '#D9B372';
+      const isSwapped = obj.rotation === 'sw' || obj.rotation === 'ne';
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy - 6,
+        isSwapped ? 46 : 52,
+        isSwapped ? 23 : 26,
+        5,
+        topTint,
+        obj.rotation === 'nw' || obj.rotation === 'ne' ? '#966F33' : '#B88E4C',
+        obj.rotation === 'nw' || obj.rotation === 'ne' ? '#B88E4C' : '#966F33',
+        '#000000'
+      );
+      break;
+    }
+
+    case 'glass_bottle': {
+      const tint = obj.colorVariant || '#34D399';
+      const baseCy = sy + 12;
+      const isBack = obj.rotation === 'nw' || obj.rotation === 'ne';
+      drawIsoPrism(
+        ctx,
+        sx,
+        baseCy,
+        14,
+        7,
+        14,
+        '#E2E8F0',
+        isBack ? '#059669' : tint,
+        isBack ? tint : '#059669',
+        '#000000'
+      );
+      drawIsoPrism(
+        ctx,
+        sx,
+        baseCy - 14,
+        6,
+        3,
+        6,
+        '#FDE68A',
+        '#CBD5E1',
+        '#94A3B8',
+        '#000000'
+      );
+      ctx.fillStyle = '#FFFFFF';
+      const glintX =
+        obj.rotation === 'se'
+          ? sx - 3
+          : obj.rotation === 'sw'
+            ? sx + 1
+            : obj.rotation === 'nw'
+              ? sx + 2
+              : sx - 2;
+      ctx.fillRect(Math.round(glintX), Math.round(baseCy - 10), 2, 7);
+      break;
+    }
+
+    case 'building_block': {
+      const baseColor = (obj.colorVariant || '#F59E0B').toLowerCase();
+      let blockSprite = null;
+      if (baseColor === '#f59e0b' || baseColor === '#facc15') {
+        blockSprite = atlas.bbYellow;
+      } else if (baseColor === '#ef4444') {
+        blockSprite = atlas.bbRed;
+      } else if (baseColor === '#38bdf8' || baseColor === '#22d3ee') {
+        blockSprite = atlas.bbBlue;
+      } else if (baseColor === '#34d399' || baseColor === '#22c55e') {
+        blockSprite = atlas.bbGreen;
+      }
+
+      if (blockSprite) {
+        const bw = 36;
+        const bh = 44;
+        drawSpriteWithRotation(
+          ctx,
+          blockSprite,
+          sx,
+          sy + TILE_HEIGHT - bh - 1,
+          bw,
+          bh,
+          obj.rotation
+        );
+      } else {
+        const topCol = obj.colorVariant || '#E2E8F0';
+        drawIsoPrism(
+          ctx,
+          sx,
+          sy + 4,
+          36,
+          18,
+          18,
+          topCol,
+          topCol,
+          topCol,
+          '#000000'
+        );
+        drawIsoDiamond(ctx, sx, sy - 14, 36, 18, 'rgba(255,255,255,0.22)');
+      }
+      break;
+    }
+
+    case 'admin_console': {
+      const baseCy = sy + 3;
+      const isBack = obj.rotation === 'nw' || obj.rotation === 'ne';
+      drawIsoPrism(
+        ctx,
+        sx,
+        baseCy,
+        52,
+        26,
+        22,
+        '#334155',
+        isBack ? '#0F172A' : '#1E293B',
+        isBack ? '#1E293B' : '#0F172A',
+        '#000000'
+      );
+      const pulse = Math.sin(tick * 0.1) > 0;
+      drawIsoDiamond(
+        ctx,
+        sx - 10,
+        baseCy - 16,
+        8,
+        4,
+        pulse ? '#22C55E' : '#15803D',
+        '#000000'
+      );
+      drawIsoDiamond(
+        ctx,
+        sx,
+        baseCy - 14,
+        8,
+        4,
+        !pulse ? '#F59E0B' : '#B45309',
+        '#000000'
+      );
+      drawIsoDiamond(ctx, sx + 10, baseCy - 16, 8, 4, '#EC4899', '#000000');
+
+      const deckShiftX =
+        obj.rotation === 'sw' || obj.rotation === 'ne' ? 4 : -4;
+      drawIsoPrism(
+        ctx,
+        sx + deckShiftX,
+        baseCy - 22,
+        34,
+        17,
+        20,
+        '#475569',
+        '#064E3B',
+        '#0F172A',
+        '#000000'
+      );
+      ctx.fillStyle = '#34D399';
+      ctx.fillRect(Math.round(sx - 13), Math.round(baseCy - 33), 4, 8);
+      ctx.fillStyle = '#F59E0B';
+      ctx.fillRect(Math.round(sx - 6), Math.round(baseCy - 31), 6, 6);
+
+      if (atlas.cameraBot) {
+        drawSpriteWithRotation(
+          ctx,
+          atlas.cameraBot,
+          sx + 14,
+          baseCy - 44,
+          atlas.cameraBot.width,
+          atlas.cameraBot.height,
+          obj.rotation
+        );
+      }
+      break;
+    }
+
+    case 'neon_bulletin':
+    case 'floating_screen': {
+      const proj =
+        projects.find((p) => p.id === obj.projectId) || {
+          title: obj.label,
+          category: 'PROJECT',
+          accentColor: '#38BDF8',
+        };
+      const isBulletin = obj.type === 'neon_bulletin';
+      const bob = isBulletin
+        ? 0
+        : Math.round(Math.sin(tick * 0.06 + obj.x) * 2);
+
+      if (isBulletin) {
+        drawIsoPrism(
+          ctx,
+          sx,
+          sy + 5,
+          44,
+          22,
+          40,
+          '#1E293B',
+          '#0F172A',
+          '#090D16',
+          '#000000'
+        );
+      } else {
+        drawIsoDiamond(
+          ctx,
+          sx,
+          sy + 8,
+          32,
+          16,
+          'rgba(56, 189, 248, 0.25)',
+          proj.accentColor
+        );
+      }
+
+      const panelW = 58;
+      const panelH = 30;
+      const rotShiftX =
+        obj.rotation === 'se'
+          ? -3
+          : obj.rotation === 'sw'
+            ? 3
+            : obj.rotation === 'nw'
+              ? -5
+              : 5;
+      const px = Math.round(sx - panelW / 2 + rotShiftX);
+      const py = Math.round(sy - (isBulletin ? 42 : 32) + bob);
+
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(px - 1, py - 1, panelW + 2, panelH + 2);
+      ctx.fillStyle =
+        obj.rotation === 'nw' || obj.rotation === 'ne' ? '#1E293B' : '#0B1120';
+      ctx.fillRect(px, py, panelW, panelH);
+      ctx.strokeStyle = proj.accentColor;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(px + 1, py + 1, panelW - 2, panelH - 2);
+
+      ctx.fillStyle = proj.accentColor;
+      ctx.fillRect(px + 2, py + 2, panelW - 4, 7);
+
+      ctx.fillStyle = '#020617';
+      ctx.font = 'bold 7px "Volter", monospace';
+      ctx.textAlign = 'left';
+      ctx.fillText(proj.category.slice(0, 9).toUpperCase(), px + 4, py + 8);
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = '9px "Volter", monospace';
+      const shortTitle =
+        proj.title.length > 10 ? proj.title.slice(0, 9) + '…' : proj.title;
+      ctx.fillText(shortTitle, px + 4, py + 19);
+
+      ctx.fillStyle = '#94A3B8';
+      ctx.fillRect(px + 4, py + 23, panelW - 16, 2);
+      ctx.fillStyle = proj.accentColor;
+      ctx.fillRect(px + panelW - 9, py + 22, 5, 4);
+      break;
+    }
+
+    case 'youtube_tv': {
+      const isCatalogPreview = obj.id.startsWith('__');
+      const isRightWallAligned =
+        obj.rotation === 'se' || obj.rotation === 'nw';
+      const slope = isRightWallAligned ? 0.5 : -0.5;
+
+      const anchor = isCatalogPreview
+        ? { sx, sy }
+        : getTvWallScreenAnchor(obj, originX, originY);
+      const tvSx = anchor.sx;
+      const tvSy = anchor.sy;
+
+      const screenW = isCatalogPreview ? 62 : TV_SCREEN_WIDTH_PX;
+      const screenH = isCatalogPreview ? 46 : TV_SCREEN_HEIGHT_PX;
+      const centerOffsetY = isCatalogPreview ? -18 : TV_SCREEN_CENTER_OFFSET_Y;
+      const centerY = tvSy + centerOffsetY;
+
+      const halfFrameW = (screenW + 8) / 2;
+      const halfFrameH = (screenH + 8) / 2;
+      const halfScreenW = screenW / 2;
+      const halfScreenH = screenH / 2;
+
+      // 3D depth extrusion vector away from viewer toward back wall
+      const depthX = isRightWallAligned ? 6 : -6;
+      const depthY = -4;
+
+      const fTL: [number, number] = [
+        Math.round(tvSx - halfFrameW),
+        Math.round(centerY - halfFrameH - halfFrameW * slope),
+      ];
+      const fTR: [number, number] = [
+        Math.round(tvSx + halfFrameW),
+        Math.round(centerY - halfFrameH + halfFrameW * slope),
+      ];
+      const fBR: [number, number] = [
+        Math.round(tvSx + halfFrameW),
+        Math.round(centerY + halfFrameH + halfFrameW * slope),
+      ];
+      const fBL: [number, number] = [
+        Math.round(tvSx - halfFrameW),
+        Math.round(centerY + halfFrameH - halfFrameW * slope),
+      ];
+
+      // 1. 3D Extruded Rear TV Casing (Top & Side Bevels)
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(fTL[0], fTL[1]);
+      ctx.lineTo(fTL[0] + depthX, fTL[1] + depthY);
+      ctx.lineTo(fTR[0] + depthX, fTR[1] + depthY);
+      ctx.lineTo(fTR[0], fTR[1]);
+      ctx.closePath();
+      ctx.fillStyle = '#475569';
+      ctx.fill();
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Side 3D casing face
+      ctx.beginPath();
+      if (isRightWallAligned) {
+        ctx.moveTo(fTR[0], fTR[1]);
+        ctx.lineTo(fTR[0] + depthX, fTR[1] + depthY);
+        ctx.lineTo(fBR[0] + depthX, fBR[1] + depthY);
+        ctx.lineTo(fBR[0], fBR[1]);
+      } else {
+        ctx.moveTo(fTL[0], fTL[1]);
+        ctx.lineTo(fTL[0] + depthX, fTL[1] + depthY);
+        ctx.lineTo(fBL[0] + depthX, fBL[1] + depthY);
+        ctx.lineTo(fBL[0], fBL[1]);
+      }
+      ctx.closePath();
+      ctx.fillStyle = '#0F172A';
+      ctx.fill();
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // 2. Outer Cinema Wall Bezel Frame (with golden accent border matching reference outline)
+      ctx.beginPath();
+      ctx.moveTo(fTL[0], fTL[1]);
+      ctx.lineTo(fTR[0], fTR[1]);
+      ctx.lineTo(fBR[0], fBR[1]);
+      ctx.lineTo(fBL[0], fBL[1]);
+      ctx.closePath();
+      ctx.fillStyle = '#18181B';
+      ctx.fill();
+      ctx.strokeStyle = '#F59E0B';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // Bottom Cinema Soundbar / Sill Trim
+      ctx.beginPath();
+      ctx.moveTo(fBL[0], fBL[1] - 2);
+      ctx.lineTo(fBR[0], fBR[1] - 2);
+      ctx.lineTo(fBR[0], fBR[1] + 3);
+      ctx.lineTo(fBL[0], fBL[1] + 3);
+      ctx.closePath();
+      ctx.fillStyle = obj.colorVariant || '#F59E0B';
+      ctx.fill();
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // 3. Inner 3D Isometric Screen (284px x 102px in room)
+      const sTL: [number, number] = [
+        Math.round(tvSx - halfScreenW),
+        Math.round(centerY - halfScreenH - halfScreenW * slope),
+      ];
+      const sTR: [number, number] = [
+        Math.round(tvSx + halfScreenW),
+        Math.round(centerY - halfScreenH + halfScreenW * slope),
+      ];
+      const sBR: [number, number] = [
+        Math.round(tvSx + halfScreenW),
+        Math.round(centerY + halfScreenH + halfScreenW * slope),
+      ];
+      const sBL: [number, number] = [
+        Math.round(tvSx - halfScreenW),
+        Math.round(centerY + halfScreenH - halfScreenW * slope),
+      ];
+
+      ctx.beginPath();
+      ctx.moveTo(sTL[0], sTL[1]);
+      ctx.lineTo(sTR[0], sTR[1]);
+      ctx.lineTo(sBR[0], sBR[1]);
+      ctx.lineTo(sBL[0], sBL[1]);
+      ctx.closePath();
+      ctx.fillStyle = '#090D16';
+      ctx.fill();
+      ctx.strokeStyle = '#FACC15';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Draw skewed YouTube Play Badge & Channel ID inside the canvas screen
+      ctx.save();
+      ctx.translate(tvSx, centerY);
+      ctx.transform(1, slope, 0, 1, 0, 0);
+
+      ctx.fillStyle = '#111827';
+      ctx.fillRect(-halfScreenW + 2, -halfScreenH + 2, screenW - 4, screenH - 4);
+
+      ctx.fillStyle = '#EF4444';
+      ctx.fillRect(-halfScreenW + 2, -halfScreenH + 2, screenW - 4, 10);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = 'bold 6px "Volter", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText('YOUTUBE 3D CINEMA', 0, -halfScreenH + 9);
+
+      // Center YouTube Red Play Button
+      ctx.fillStyle = '#EF4444';
+      ctx.fillRect(-12, -8, 24, 16);
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(-12, -8, 24, 16);
+      ctx.beginPath();
+      ctx.moveTo(-3, -4);
+      ctx.lineTo(5, 0.5);
+      ctx.lineTo(-3, 5);
+      ctx.closePath();
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fill();
+
+      const vidId = extractYouTubeVideoId(obj.videoUrl) || 'jfKfPfyJRdk';
+      ctx.fillStyle = '#94A3B8';
+      ctx.font = '6px "Volter", monospace';
+      ctx.fillText(vidId.slice(0, 11), 0, halfScreenH - 6);
+
+      ctx.restore();
+      ctx.restore();
+      break;
+    }
+  }
+
+  ctx.restore();
+}
+
+/**
+ * Draws a subtle, authentic Habbo tile grid and highlights only the active/hovered tile.
+ */
+function drawEditorGridOverlay(
+  ctx: CanvasRenderingContext2D,
+  originX: number,
+  originY: number,
+  _objects: RoomObject[],
+  hoveredTile: GridCoord | null,
+  selectedTile: GridCoord | null
+) {
+  ctx.save();
+  for (let y = 0; y < GRID_SIZE; y++) {
+    for (let x = 0; x < GRID_SIZE; x++) {
+      const { sx, sy } = gridToScreen(x, y, 0, originX, originY);
+      const isHovered = hoveredTile?.x === x && hoveredTile?.y === y;
+      const isSelected = selectedTile?.x === x && selectedTile?.y === y;
+
+      if (isHovered || isSelected) {
+        drawIsoDiamond(
+          ctx,
+          sx,
+          sy + 1,
+          TILE_WIDTH - 2,
+          TILE_HEIGHT - 1,
+          isHovered
+            ? 'rgba(255, 255, 255, 0.35)'
+            : 'rgba(250, 204, 21, 0.25)',
+          isHovered ? '#FFFFFF' : '#FACC15',
+          2
+        );
+      } else {
+        drawIsoDiamond(
+          ctx,
+          sx,
+          sy + 1,
+          TILE_WIDTH - 2,
+          TILE_HEIGHT - 1,
+          'transparent',
+          'rgba(0, 0, 0, 0.12)',
+          1
+        );
+      }
+    }
+  }
+  ctx.restore();
+}
+
+/**
+ * Renders the miniature isometric grey room corner inside the Builders' Club dialog
+ * ("Entrepôt du Builders' Club") with the selected furniture item centered on the floor.
+ */
+export function renderBuilderPreviewBox(params: {
+  ctx: CanvasRenderingContext2D;
+  width: number;
+  height: number;
+  type: RoomObject['type'];
+  rotation: IsometricRotation;
+  rotationAngle?: number;
+  scale?: number;
+  colorVariant?: string;
+  projects: ProjectLink[];
+  stackLayers?: InventoryStackLayer[];
+}) {
+  const {
+    ctx,
+    width,
+    height,
+    type,
+    rotation,
+    rotationAngle,
+    scale,
+    colorVariant,
+    projects,
+    stackLayers,
+  } = params;
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, width, height);
+
+  const cornerX = Math.round(width * 0.52);
+  const cornerY = 58;
+
+  // Left grey wall
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(cornerX, 0);
+  ctx.lineTo(cornerX, cornerY);
+  ctx.lineTo(0, cornerY + Math.round(cornerX * 0.5));
+  ctx.closePath();
+  ctx.fillStyle = '#9A9A96';
+  ctx.fill();
+
+  // Right grey wall
+  ctx.beginPath();
+  ctx.moveTo(cornerX, 0);
+  ctx.lineTo(width, 0);
+  ctx.lineTo(width, cornerY + Math.round((width - cornerX) * 0.5));
+  ctx.lineTo(cornerX, cornerY);
+  ctx.closePath();
+  ctx.fillStyle = '#B2B2AE';
+  ctx.fill();
+
+  // Center vertical corner seam
+  ctx.strokeStyle = '#888884';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(cornerX, 0);
+  ctx.lineTo(cornerX, cornerY);
+  ctx.stroke();
+
+  // Isometric grey tiled floor
+  ctx.beginPath();
+  ctx.moveTo(cornerX, cornerY);
+  ctx.lineTo(width + 40, cornerY + Math.round((width + 40 - cornerX) * 0.5));
+  ctx.lineTo(cornerX, height + 60);
+  ctx.lineTo(-40, cornerY + Math.round((cornerX + 40) * 0.5));
+  ctx.closePath();
+  ctx.fillStyle = '#CBCBC7';
+  ctx.fill();
+
+  // Wall baseboards
+  ctx.strokeStyle = '#82827E';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(0, cornerY + Math.round(cornerX * 0.5));
+  ctx.lineTo(cornerX, cornerY);
+  ctx.lineTo(width, cornerY + Math.round((width - cornerX) * 0.5));
+  ctx.stroke();
+
+  // Draw 3x3 isometric floor tiles in the preview box
+  for (let gx = 0; gx < 4; gx++) {
+    for (let gy = 0; gy < 4; gy++) {
+      const { sx, sy } = gridToScreen(gx, gy, 0, cornerX, cornerY);
+      drawIsoDiamond(
+        ctx,
+        sx,
+        sy,
+        TILE_WIDTH,
+        TILE_HEIGHT,
+        '#CBCBC7',
+        '#BDBDB9',
+        1
+      );
+    }
+  }
+
+  if (stackLayers && stackLayers.length > 0) {
+    let solidZ = 0;
+    stackLayers.forEach((layer, idx) => {
+      const isRug = OBJECT_CATALOG[layer.type]?.defaultWalkable;
+      const zTier = isRug ? 0 : solidZ;
+      if (!isRug) solidZ += 1;
+      const layerObj: RoomObject = {
+        id: `__bc_stack_${idx}__`,
+        type: layer.type,
+        label: layer.label,
+        x: 1,
+        y: 1,
+        z: zTier,
+        rotation: layer.rotation,
+        rotationAngle: layer.rotationAngle,
+        scale: layer.scale,
+        colorVariant: layer.colorVariant,
+        walkable: isRug,
+        createdAt: '',
+      };
+      drawRoomObject(
+        ctx,
+        layerObj,
+        cornerX,
+        cornerY,
+        projects,
+        false,
+        false,
+        0,
+        false
+      );
+    });
+    return;
+  }
+
+  // Render the selected furniture item centered at tile (1, 1)
+  const previewObj: RoomObject = {
+    id: '__bc_preview__',
+    type,
+    label: type,
+    x: 1,
+    y: 1,
+    z: 0,
+    rotation,
+    rotationAngle,
+    scale,
+    colorVariant,
+    walkable: type.startsWith('luxury_rug'),
+    createdAt: '',
+  };
+  drawRoomObject(
+    ctx,
+    previewObj,
+    cornerX,
+    cornerY,
+    projects,
+    false,
+    false,
+    0,
+    false
+  );
+}
+
+/**
+ * Renders a miniature isometric thumbnail of a furniture item into a 36x36 slot canvas
+ * inside the Builders' Club catalog grid.
+ */
+export function renderFurniSlotThumbnail(params: {
+  ctx: CanvasRenderingContext2D;
+  width: number;
+  height: number;
+  type: RoomObject['type'];
+  colorVariant?: string;
+  projects: ProjectLink[];
+}) {
+  const { ctx, width, height, type, colorVariant, projects } = params;
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, width, height);
+
+  ctx.save();
+  const scale = type.startsWith('luxury_rug') ? 0.48 : 0.52;
+  ctx.translate(Math.round(width / 2), Math.round(height * 0.62));
+  ctx.scale(scale, scale);
+
+  const slotObj: RoomObject = {
+    id: `__slot_${type}__`,
+    type,
+    label: type,
+    x: 0,
+    y: 0,
+    z: 0,
+    rotation: 'se',
+    colorVariant,
+    walkable: type.startsWith('luxury_rug'),
+    createdAt: '',
+  };
+  drawRoomObject(ctx, slotObj, 0, -14, projects, false, false, 0, false);
+  ctx.restore();
+}
+
+/**
+ * Renders a live translucent ghost preview of the furniture item being placed or dragged
+ * onto tile (ghost.x, ghost.y, ghost.z) with an exact isometric footprint ring and coordinate tag.
+ */
+function drawGhostPreviewObject(
+  ctx: CanvasRenderingContext2D,
+  ghost: GhostPlacementPreview,
+  originX: number,
+  originY: number,
+  projects: ProjectLink[],
+  tick: number
+) {
+  const { sx: baseSx, sy: baseSy } = gridToScreen(
+    ghost.x,
+    ghost.y,
+    0,
+    originX,
+    originY
+  );
+  const { sx, sy } = gridToScreen(
+    ghost.x,
+    ghost.y,
+    ghost.z,
+    originX,
+    originY
+  );
+
+  ctx.save();
+
+  // 1. Base floor target diamond
+  drawIsoDiamond(
+    ctx,
+    baseSx,
+    baseSy + 1,
+    TILE_WIDTH - 2,
+    TILE_HEIGHT - 1,
+    'rgba(16, 185, 129, 0.28)',
+    '#10B981',
+    2
+  );
+
+  // 2. If stacked (z > 0), draw vertical elevation guide lines from floor to z
+  if (ghost.z > 0) {
+    ctx.strokeStyle = '#34D399';
+    ctx.setLineDash([2, 2]);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(baseSx, baseSy + TILE_HEIGHT / 2);
+    ctx.lineTo(sx, sy + TILE_HEIGHT / 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    drawIsoDiamond(
+      ctx,
+      sx,
+      sy + 1,
+      TILE_WIDTH - 4,
+      TILE_HEIGHT - 2,
+      'rgba(52, 211, 153, 0.24)',
+      '#34D399',
+      1.5
+    );
+  }
+
+  // 3. Draw the actual furniture sprite (or pre-stacked layers) at 72% opacity
+  ctx.globalAlpha = 0.72;
+  if (ghost.stackLayers && ghost.stackLayers.length > 0) {
+    let tierOffset = 0;
+    ghost.stackLayers.forEach((layer, idx) => {
+      const isRug = OBJECT_CATALOG[layer.type]?.defaultWalkable;
+      const layerZ = isRug ? 0 : Math.min(6, ghost.z + tierOffset);
+      if (!isRug) tierOffset += 1;
+      const stackTempObj: RoomObject = {
+        id: `__ghost_stack_${idx}__`,
+        type: layer.type,
+        label: layer.label,
+        x: ghost.x,
+        y: ghost.y,
+        z: layerZ,
+        rotation: layer.rotation,
+        rotationAngle: layer.rotationAngle,
+        scale: layer.scale,
+        colorVariant: layer.colorVariant,
+        walkable: isRug,
+        projectId: layer.projectId,
+        createdAt: '',
+      };
+      drawRoomObject(
+        ctx,
+        stackTempObj,
+        originX,
+        originY,
+        projects,
+        false,
+        false,
+        tick,
+        false
+      );
+    });
+  } else {
+    const tempObj: RoomObject = {
+      id: '__ghost_preview__',
+      type: ghost.type,
+      label: ghost.label,
+      x: ghost.x,
+      y: ghost.y,
+      z: ghost.z,
+      rotation: ghost.rotation,
+      rotationAngle: ghost.rotationAngle,
+      scale: ghost.scale,
+      colorVariant: ghost.colorVariant,
+      walkable: ghost.type.startsWith('luxury_rug'),
+      projectId: ghost.projectId,
+      createdAt: '',
+    };
+    drawRoomObject(
+      ctx,
+      tempObj,
+      originX,
+      originY,
+      projects,
+      false,
+      false,
+      tick,
+      false
+    );
+  }
+
+  // 4. Crisp coordinate pill badge above the ghost preview
+  ctx.globalAlpha = 1;
+  const ghostScale = clampObjectScale(ghost.scale);
+  const ghostAngle = normalizeRotationAngle(
+    ghost.rotationAngle,
+    ghost.rotation
+  );
+  const tagText =
+    ghost.stackLayers && ghost.stackLayers.length > 0
+      ? `STACK (${ghost.stackLayers.length}) AT (${ghost.x}, ${ghost.y})`
+      : `(${ghost.x}, ${ghost.y}${ghost.z > 0 ? `, z=${ghost.z}` : ''}) · ${ghostAngle}° · ${ghostScale.toFixed(2)}x`;
+  ctx.font = 'bold 8px "Volter", monospace';
+  const tw = Math.ceil(ctx.measureText(tagText).width) + 10;
+  const th = 15;
+  const tx = Math.round(sx - tw / 2);
+  const ty = Math.round(sy - 32);
+
+  ctx.fillStyle = '#022C22';
+  ctx.fillRect(tx, ty, tw, th);
+  ctx.strokeStyle = '#34D399';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(tx, ty, tw, th);
+  ctx.fillStyle = '#A7F3D0';
+  ctx.textAlign = 'center';
+  ctx.fillText(tagText, Math.round(sx), ty + 10);
+
+  ctx.restore();
+}
+
+/**
+ * Draws a procedural pixel-art Habbo visitor avatar with custom random colors & accessories
+ * in all 4 isometric directions ('se', 'sw', 'nw', 'ne'), including walking stride and seated poses.
+ */
+function drawCustomVisitorAvatar(
+  ctx: CanvasRenderingContext2D,
+  sx: number,
+  sy: number,
+  facing: IsometricRotation,
+  isWalking: boolean,
+  isSitting: boolean,
+  tick: number,
+  profile: VisitorAvatarProfile
+) {
+  const isBackView = facing === 'nw' || facing === 'ne';
+  const isMirrored = facing === 'se' || facing === 'ne';
+  const walkBob = isWalking ? Math.round(Math.abs(Math.sin(tick * 0.35)) * 2) : 0;
+  const stridePhase = isWalking ? Math.sin(tick * 0.42) : 0;
+  const leftLegDx = Math.round(stridePhase * 4);
+  const rightLegDx = -leftLegDx;
+
+  ctx.save();
+  const baseX = Math.round(sx + (isSitting ? (isMirrored ? 4 : -4) : 0));
+  const baseY = Math.round(sy + (isSitting ? -12 : 4) - walkBob);
+
+  if (isMirrored) {
+    ctx.translate(baseX, 0);
+    ctx.scale(-1, 1);
+  } else {
+    ctx.translate(baseX, 0);
+  }
+
+  // Helper for outlined pixel blocks
+  const pBox = (x: number, y: number, w: number, h: number, fill: string) => {
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(Math.round(x - 1), Math.round(y - 1), Math.round(w + 2), Math.round(h + 2));
+    ctx.fillStyle = fill;
+    ctx.fillRect(Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+  };
+
+  if (isSitting) {
+    // Seated legs angled forward-left
+    pBox(-10, baseY - 12, 8, 10, profile.pantsColor);
+    pBox(-3, baseY - 10, 8, 10, profile.pantsColor);
+    pBox(-13, baseY - 4, 8, 4, profile.shoeColor);
+    pBox(-6, baseY - 2, 8, 4, profile.shoeColor);
+  } else {
+    // Standing or striding legs
+    pBox(-8 + leftLegDx, baseY - 18, 7, 14, profile.pantsColor);
+    pBox(1 + rightLegDx, baseY - 17, 7, 14, profile.pantsColor);
+    pBox(-10 + leftLegDx, baseY - 5, 8, 4, profile.shoeColor);
+    pBox(-1 + rightLegDx, baseY - 4, 8, 4, profile.shoeColor);
+  }
+
+  const torsoTopY = isSitting ? baseY - 32 : baseY - 38;
+  // Torso / Shirt
+  pBox(-9, torsoTopY, 18, 20, profile.shirtColor);
+
+  // Shirt shading / collar detail
+  if (!isBackView) {
+    ctx.fillStyle = 'rgba(255,255,255,0.22)';
+    ctx.fillRect(-5, torsoTopY + 2, 6, 3);
+  } else {
+    ctx.fillStyle = 'rgba(0,0,0,0.22)';
+    ctx.fillRect(-2, torsoTopY + 2, 4, 16);
+  }
+
+  // Swinging arms
+  const armSwing = isWalking ? Math.round(stridePhase * 3) : 0;
+  pBox(-13, torsoTopY + 2 - armSwing, 4, 14, profile.shirtColor);
+  pBox(-13, torsoTopY + 14 - armSwing, 4, 3, profile.skinColor);
+  pBox(9, torsoTopY + 2 + armSwing, 4, 14, profile.shirtColor);
+  pBox(9, torsoTopY + 14 + armSwing, 4, 3, profile.skinColor);
+
+  // Head
+  const headTopY = torsoTopY - 21;
+  pBox(-9, headTopY, 18, 19, isBackView ? profile.hairColor : profile.skinColor);
+
+  if (!isBackView) {
+    // Hair top & sideburns
+    ctx.fillStyle = profile.hairColor;
+    ctx.fillRect(-9, headTopY, 18, 6);
+    ctx.fillRect(4, headTopY + 5, 5, 7);
+    // Crisp Habbo pixel eyes & smile facing SW
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(-6, headTopY + 9, 2, 3);
+    ctx.fillRect(0, headTopY + 9, 2, 3);
+    ctx.fillRect(-4, headTopY + 14, 4, 1);
+  } else {
+    // Back of head hair texture
+    ctx.fillStyle = 'rgba(0,0,0,0.2)';
+    ctx.fillRect(-6, headTopY + 6, 2, 10);
+    ctx.fillRect(0, headTopY + 5, 2, 11);
+    ctx.fillRect(5, headTopY + 6, 2, 10);
+  }
+
+  // Accessory (Cap, Visor, Headphones, or Crown)
+  if (profile.accessory === 'cap') {
+    pBox(-10, headTopY - 4, 19, 5, profile.shirtColor);
+    if (!isBackView) {
+      pBox(-14, headTopY - 1, 8, 3, profile.shirtColor);
+    }
+  } else if (profile.accessory === 'visor') {
+    if (!isBackView) {
+      pBox(-11, headTopY + 5, 14, 4, '#38BDF8');
+    }
+  } else if (profile.accessory === 'headphones') {
+    pBox(-11, headTopY + 4, 3, 9, '#FACC15');
+    pBox(8, headTopY + 4, 3, 9, '#FACC15');
+  } else if (profile.accessory === 'crown') {
+    pBox(-7, headTopY - 6, 14, 6, '#FACC15');
+  }
+
+  ctx.restore();
+
+  // Floating Visitor Name Tag above the character's head
+  ctx.save();
+  ctx.font = 'bold 8px "Volter", monospace';
+  const label = profile.name;
+  const tw = Math.ceil(ctx.measureText(label).width) + 8;
+  const th = 13;
+  const tx = Math.round(sx - tw / 2);
+  const ty = Math.round((isSitting ? baseY - 68 : baseY - 76));
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
+  ctx.fillRect(tx, ty, tw, th);
+  ctx.strokeStyle = profile.shirtColor;
+  ctx.lineWidth = 1;
+  ctx.strokeRect(tx, ty, tw, th);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.textAlign = 'center';
+  ctx.fillText(label, Math.round(sx), ty + 9);
+  ctx.restore();
+}
+
+/**
+ * Draws the user's Habbo avatar (either random Visitor Avatar or Owner "Higma") in all 4 directions ('se', 'sw', 'nw', 'ne'),
+ * including a 4-frame walking leg stride animation and a true back-view ('nw' / 'ne')
+ * when walking away from the viewer!
+ */
+function drawHabboAvatar(
+  ctx: CanvasRenderingContext2D,
+  avatarPos: { x: number; y: number },
+  facing: IsometricRotation,
+  isWalking: boolean,
+  isSitting: boolean,
+  originX: number,
+  originY: number,
+  tick: number,
+  avatarShadowAlpha: number,
+  visitorAvatar?: VisitorAvatarProfile | null
+) {
+  const { sx, sy } = gridToScreen(
+    avatarPos.x,
+    avatarPos.y,
+    isSitting ? 0 : 0.2,
+    originX,
+    originY
+  );
+  const atlas = getHabboSpriteAtlas();
+  const isBackView = facing === 'nw' || facing === 'ne';
+  const isMirrored = facing === 'se' || facing === 'ne';
+
+  // Shadow under avatar when standing (intensity scales with Time of Day)
+  if (!isSitting) {
+    drawIsoDiamond(
+      ctx,
+      sx,
+      sy + 2,
+      26,
+      13,
+      `rgba(0, 0, 0, ${avatarShadowAlpha})`
+    );
+  }
+
+  // If a random Visitor Avatar profile is active, render the custom visitor character!
+  if (visitorAvatar) {
+    drawCustomVisitorAvatar(
+      ctx,
+      sx,
+      sy,
+      facing,
+      isWalking,
+      isSitting,
+      tick,
+      visitorAvatar
+    );
+    return;
+  }
+
+  // Seated state (supports both front-facing SE/SW and rear-facing NW/NE sofas)
+  if (isSitting) {
+    const sitSprite = isBackView
+      ? atlas.higmaSittingNW || atlas.higmaSittingSW
+      : atlas.higmaSittingSW;
+    if (sitSprite) {
+      ctx.save();
+      const seatShiftX = isMirrored ? 4 : -4;
+      const drawX = Math.round(sx + seatShiftX);
+      const drawY = Math.round(sy - 52);
+
+      if (isMirrored) {
+        ctx.translate(drawX, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(sitSprite, Math.round(-sitSprite.width / 2), drawY);
+      } else {
+        ctx.drawImage(sitSprite, Math.round(drawX - sitSprite.width / 2), drawY);
+      }
+      ctx.restore();
+      return;
+    }
+  }
+
+  // Walking & Standing 4-way animated sprite
+  const frameArray = isBackView ? atlas.higmaWalkNW : atlas.higmaWalkSW;
+  const walkFrameIdx = isWalking ? (Math.floor(tick * 0.28) % 3) + 1 : 0;
+  const walkSprite =
+    frameArray && frameArray.length > walkFrameIdx
+      ? frameArray[walkFrameIdx]
+      : atlas.higmaAvatar || atlas.openHotelAvatar;
+
+  if (walkSprite) {
+    ctx.save();
+    const walkBob = isWalking ? Math.round(Math.abs(Math.sin(tick * 0.35)) * 2) : 0;
+    const drawX = Math.round(sx);
+    const drawY = Math.round(sy + TILE_HEIGHT - walkSprite.height + 5 - walkBob);
+
+    if (isMirrored) {
+      ctx.translate(drawX, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(walkSprite, Math.round(-walkSprite.width / 2), drawY);
+    } else {
+      ctx.drawImage(walkSprite, Math.round(drawX - walkSprite.width / 2), drawY);
+    }
+    ctx.restore();
+    return;
+  }
+
+  // Fallback pixel avatar if image not yet decoded
+  drawIsoPrism(
+    ctx,
+    sx,
+    sy - 10,
+    18,
+    9,
+    24,
+    '#F59E0B',
+    '#D97706',
+    '#B45309',
+    '#000000'
+  );
+}
+
+/**
+ * Draws the authentic Habbo floating chat bubbles above the room with Volter 9px pixel font.
+ * Each bubble smoothly rises upward based on its elapsed lifetime and fades out before auto-removal.
+ */
+function drawHabboChatBubbles(
+  ctx: CanvasRenderingContext2D,
+  chatBubbles: ChatBubble[],
+  originX: number,
+  originY: number
+) {
+  if (!chatBubbles || chatBubbles.length === 0) return;
+  const atlas = getHabboSpriteAtlas();
+  const now = Date.now();
+  const ttlMs = 4200;
+
+  const activeBubbles = chatBubbles
+    .filter((b) => now - b.createdAt < ttlMs)
+    .slice(-5);
+
+  if (activeBubbles.length === 0) return;
+
+  const baseStartY = Math.max(40, originY - 165);
+
+  activeBubbles.forEach((bubble, idx) => {
+    const ageMs = Math.max(0, now - bubble.createdAt);
+    const floatRisePx = Math.round((ageMs / 1000) * 16);
+    const fadeStartMs = ttlMs - 850;
+    const alpha =
+      ageMs > fadeStartMs
+        ? Math.max(0, 1 - (ageMs - fadeStartMs) / 850)
+        : 1;
+
+    if (alpha <= 0.02) return;
+
+    ctx.save();
+    ctx.globalAlpha = alpha;
+
+    const isCat = bubble.speakerType === 'cat';
+    const bx = isCat ? originX - 88 : originX + 18;
+    const by = baseStartY + idx * 26 - floatRisePx;
+
+    ctx.font = 'bold 9px "Volter", monospace';
+    const speakerLabel = `${bubble.speaker}: `;
+    const speakerW = Math.ceil(ctx.measureText(speakerLabel).width);
+
+    ctx.font = '9px "Volter", monospace';
+    const textW = Math.ceil(ctx.measureText(bubble.text).width);
+
+    const iconW = 20;
+    const padX = 8;
+    const totalW = iconW + speakerW + textW + padX * 2;
+    const totalH = 21;
+    const leftX = Math.round(bx - totalW / 2);
+    const topY = Math.round(by);
+
+    ctx.fillStyle = '#000000';
+    ctx.fillRect(leftX - 1, topY, totalW + 2, totalH);
+    ctx.fillRect(leftX, topY - 1, totalW, totalH + 2);
+
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(leftX, topY, totalW, totalH);
+
+    ctx.fillStyle = '#E4E4E4';
+    ctx.fillRect(leftX + 1, topY + totalH - 2, totalW - 2, 2);
+
+    const icon = isCat ? atlas.chatIconCat : atlas.chatIconHigma;
+    if (icon) {
+      ctx.drawImage(icon, leftX + 4, topY + 2);
+    } else {
+      ctx.fillStyle = isCat ? '#D97706' : '#EF4444';
+      ctx.fillRect(leftX + 5, topY + 4, 12, 12);
+    }
+
+    ctx.fillStyle = '#D4D4D4';
+    ctx.fillRect(leftX + 22, topY + 2, 1, totalH - 4);
+
+    ctx.fillStyle = '#000000';
+    ctx.font = 'bold 9px "Volter", monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText(speakerLabel, leftX + 26, topY + 14);
+
+    ctx.font = '9px "Volter", monospace';
+    ctx.fillText(bubble.text, leftX + 26 + speakerW, topY + 14);
+
+    ctx.restore();
+  });
+}
+
+export function renderIsometricRoom(params: RenderRoomParams) {
+  const {
+    ctx,
+    width,
+    height,
+    originX,
+    originY,
+    objects,
+    projects,
+    chatBubbles,
+    avatarPos,
+    avatarFacing,
+    isAvatarWalking,
+    isAvatarSitting = false,
+    hoveredTile,
+    selectedTile = null,
+    hoveredObjectId,
+    selectedObjectId,
+    tick,
+    timeTheme = computeTimeOfDayTheme(new Date().getHours()),
+    showGridOverlay = false,
+    ghostObject = null,
+    hideStaticAnimals = false,
+    visitorAvatar = null,
+  } = params;
+
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, width, height);
+
+  // 1. Draw cutaway brick walls and smooth golden-oak floor with Time-of-Day shadows & window sky
+  drawBrickWallsAndFloor(ctx, originX, originY, timeTheme);
+
+  // 1b. If in Editor / Admin mode, draw the structured 10x10 isometric tile grid
+  if (showGridOverlay) {
+    drawEditorGridOverlay(
+      ctx,
+      originX,
+      originY,
+      objects,
+      hoveredTile,
+      selectedTile
+    );
+  } else if (hoveredTile && !hoveredObjectId) {
+    const { sx, sy } = gridToScreen(
+      hoveredTile.x,
+      hoveredTile.y,
+      0,
+      originX,
+      originY
+    );
+    drawIsoDiamond(
+      ctx,
+      sx,
+      sy + 1,
+      TILE_WIDTH - 4,
+      TILE_HEIGHT - 2,
+      'rgba(255, 255, 255, 0.18)',
+      '#FFFFFF',
+      1
+    );
+  }
+
+  // 3. Depth-sort all room objects + avatar using painter's algorithm
+  const sorted = sortObjectsForRender(objects);
+  const avatarDepth =
+    (avatarPos.x + avatarPos.y) * 100 + (isAvatarSitting ? 55 : 25);
+  let avatarDrawn = false;
+
+  for (const obj of sorted) {
+    const isFloorRug = obj.type.startsWith('luxury_rug');
+    const objDepth = (obj.x + obj.y) * 100 + (isFloorRug ? -50 : obj.z * 10);
+
+    if (!avatarDrawn && avatarDepth < objDepth) {
+      drawHabboAvatar(
+        ctx,
+        avatarPos,
+        avatarFacing,
+        isAvatarWalking,
+        isAvatarSitting,
+        originX,
+        originY,
+        tick,
+        timeTheme.avatarShadowAlpha,
+        visitorAvatar
+      );
+      avatarDrawn = true;
+    }
+
+    drawRoomObject(
+      ctx,
+      obj,
+      originX,
+      originY,
+      projects,
+      obj.id === hoveredObjectId,
+      obj.id === selectedObjectId,
+      tick,
+      hideStaticAnimals
+    );
+  }
+
+  if (!avatarDrawn) {
+    drawHabboAvatar(
+      ctx,
+      avatarPos,
+      avatarFacing,
+      isAvatarWalking,
+      isAvatarSitting,
+      originX,
+      originY,
+      tick,
+      timeTheme.avatarShadowAlpha,
+      visitorAvatar
+    );
+  }
+
+  // 3b. Live translucent ghost preview when dragging or hovering in Builder
+  if (ghostObject) {
+    drawGhostPreviewObject(ctx, ghostObject, originX, originY, projects, tick);
+  }
+
+  // 4. Subtle Time-of-Day ambient lighting tint over the isometric room diamond
+  const roomW = GRID_SIZE * (TILE_WIDTH / 2);
+  const roomH = GRID_SIZE * (TILE_HEIGHT / 2);
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(originX, originY);
+  ctx.lineTo(originX + roomW, originY + roomH);
+  ctx.lineTo(originX, originY + roomH * 2);
+  ctx.lineTo(originX - roomW, originY + roomH);
+  ctx.closePath();
+  ctx.fillStyle = timeTheme.ambientOverlayColor;
+  ctx.fill();
+  ctx.restore();
+
+  // 5. Floating Habbo Chat Bubbles above the room (auto-rising & fading)
+  drawHabboChatBubbles(ctx, chatBubbles, originX, originY);
+}

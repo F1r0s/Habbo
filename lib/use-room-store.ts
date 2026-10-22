@@ -1,0 +1,1389 @@
+'use client';
+
+import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  DEFAULT_ROOM_OBJECTS,
+  ORGANIZED_ROOM_OBJECTS,
+  DEFAULT_PROJECT_LINKS,
+  DEFAULT_ROOM_PETS,
+  DEFAULT_INVENTORY_ITEMS,
+  DEFAULT_ROOM_SETTINGS,
+  INITIAL_CHAT_BUBBLES,
+  RoomObject,
+  RoomPet,
+  ProjectLink,
+  ChatBubble,
+  RoomObjectType,
+  IsometricRotation,
+  PlacementMode,
+  InventoryItem,
+  InventoryStackLayer,
+  RoomSettings,
+  sanitizeRoomSettings,
+  isWallPosterType,
+  getNextStackHeightAtTile,
+  filterActiveChatBubbles,
+  applyTilePlacement,
+  moveRoomObjectToTile,
+  getNextRotation,
+  removeRoomPet,
+  VisitorAvatarProfile,
+  generateRandomVisitorAvatar,
+  updateRoomObjectVideoUrl,
+  updateRoomObjectTransform,
+  addOrRestockInventoryItem,
+  removeInventoryItemById,
+  returnRoomObjectToInventory,
+  applyInventoryStackAtTile,
+  clampObjectScale,
+  normalizeRotationAngle,
+  angleToIsometricRotation,
+  rotationToAngle,
+} from './room-engine';
+
+const STORAGE_KEY_OBJECTS = 'habbofolio_room_objects_v6';
+const STORAGE_KEY_PROJECTS = 'habbofolio_project_links_v2';
+const STORAGE_KEY_PETS = 'habbofolio_room_pets_v1';
+const STORAGE_KEY_INVENTORY = 'habbofolio_inventory_items_v3';
+const STORAGE_KEY_INVENTORY_STACK = 'habbofolio_inventory_stack_v1';
+const STORAGE_KEY_ROOM_SETTINGS = 'habbofolio_room_settings_v1';
+const STORAGE_KEY_ADMIN_AUTH = 'habbofolio_admin_auth_v1';
+const STORAGE_KEY_VISITOR_AVATAR = 'habbofolio_visitor_avatar_v1';
+
+// Authentic Open-Hotel Audio + Web Audio Ambient Lounge Music Engine
+class PixelAudioEngine {
+  private ctx: AudioContext | null = null;
+  private musicTimer: number | null = null;
+  private stepIdx: number = 0;
+  public muted: boolean = false;
+  public musicPlaying: boolean = false;
+
+  private audioCache: Record<string, HTMLAudioElement> = {};
+
+  private getCtx(): AudioContext | null {
+    if (this.muted || typeof window === 'undefined') return null;
+    if (!this.ctx) {
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext })
+          .webkitAudioContext;
+      if (AudioCtx) {
+        this.ctx = new AudioCtx();
+      }
+    }
+    if (this.ctx && this.ctx.state === 'suspended') {
+      this.ctx.resume().catch(() => {});
+    }
+    return this.ctx;
+  }
+
+  private playMp3(path: string, volume: number = 0.35) {
+    if (this.muted || typeof window === 'undefined') return;
+    try {
+      let base = this.audioCache[path];
+      if (!base) {
+        base = new Audio(path);
+        this.audioCache[path] = base;
+      }
+      const clone = base.cloneNode() as HTMLAudioElement;
+      clone.volume = volume;
+      clone.play().catch(() => {});
+    } catch {
+      // fallback to synth if blocked
+    }
+  }
+
+  // Auto-start ambient music on first user gesture if not muted
+  ensureAmbientMusicStarted() {
+    if (this.muted || this.musicPlaying) return;
+    this.startAmbientMusic();
+  }
+
+  startAmbientMusic() {
+    if (typeof window === 'undefined') return;
+    this.musicPlaying = true;
+    if (this.musicTimer !== null) return;
+
+    // Warm Habbo Hotel Lounge Bossa-Chiptune chord & marimba progression
+    const progression = [
+      // Fmaj7
+      { bass: 174.61, chord: [261.63, 329.63, 440.0], arp: [523.25, 659.25, 587.33, 440.0] },
+      // Em7
+      { bass: 164.81, chord: [246.94, 293.66, 392.0], arp: [493.88, 587.33, 523.25, 392.0] },
+      // Dm7
+      { bass: 146.83, chord: [220.0, 261.63, 349.23], arp: [440.0, 523.25, 493.88, 349.23] },
+      // G13 -> Cmaj9
+      { bass: 130.81, chord: [246.94, 329.63, 392.0], arp: [392.0, 493.88, 587.33, 659.25] },
+    ];
+
+    const playTick = () => {
+      if (this.muted || !this.musicPlaying) return;
+      const ctx = this.getCtx();
+      if (!ctx) return;
+
+      const now = ctx.currentTime;
+      const bar = Math.floor(this.stepIdx / 8) % progression.length;
+      const beat = this.stepIdx % 8;
+      const harmony = progression[bar];
+
+      // 1. Warm sub-bass lounge pulse on beats 0, 3, 6 (Bossa nova clave feel)
+      if (beat === 0 || beat === 3 || beat === 6) {
+        const bassOsc = ctx.createOscillator();
+        const bassGain = ctx.createGain();
+        bassOsc.type = 'sine';
+        bassOsc.frequency.setValueAtTime(harmony.bass, now);
+        bassGain.gain.setValueAtTime(0.035, now);
+        bassGain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+        bassOsc.connect(bassGain);
+        bassGain.connect(ctx.destination);
+        bassOsc.start(now);
+        bassOsc.stop(now + 0.4);
+      }
+
+      // 2. Soft electric-piano pad chord on beat 0 and 4
+      if (beat === 0 || beat === 4) {
+        for (const freq of harmony.chord) {
+          const padOsc = ctx.createOscillator();
+          const padGain = ctx.createGain();
+          padOsc.type = 'triangle';
+          padOsc.frequency.setValueAtTime(freq, now);
+          padGain.gain.setValueAtTime(0.012, now);
+          padGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.75);
+          padOsc.connect(padGain);
+          padGain.connect(ctx.destination);
+          padOsc.start(now);
+          padOsc.stop(now + 0.78);
+        }
+      }
+
+      // 3. Gentle pixel marimba melody notes
+      if (beat % 2 === 1) {
+        const noteFreq = harmony.arp[Math.floor(beat / 2) % harmony.arp.length];
+        const marOsc = ctx.createOscillator();
+        const marGain = ctx.createGain();
+        marOsc.type = 'sine';
+        marOsc.frequency.setValueAtTime(noteFreq, now);
+        marGain.gain.setValueAtTime(0.018, now);
+        marGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.22);
+        marOsc.connect(marGain);
+        marGain.connect(ctx.destination);
+        marOsc.start(now);
+        marOsc.stop(now + 0.24);
+      }
+
+      this.stepIdx += 1;
+    };
+
+    playTick();
+    this.musicTimer = window.setInterval(playTick, 360);
+  }
+
+  stopAmbientMusic() {
+    this.musicPlaying = false;
+    if (this.musicTimer !== null) {
+      clearInterval(this.musicTimer);
+      this.musicTimer = null;
+    }
+  }
+
+  playStep() {
+    const ctx = this.getCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(180 + Math.random() * 35, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(85, ctx.currentTime + 0.04);
+    gain.gain.setValueAtTime(0.045, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.04);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.045);
+  }
+
+  playSitOnSofa() {
+    // Authentic open-hotel pixels chime + soft cushion thump
+    this.playMp3('/resources/audio/pixels.mp3', 0.35);
+    const ctx = this.getCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(160, now);
+    osc.frequency.exponentialRampToValueAtTime(95, now + 0.11);
+    gain.gain.setValueAtTime(0.07, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.13);
+  }
+
+  playChatPop(isIncoming: boolean = false) {
+    this.playMp3(
+      isIncoming
+        ? '/resources/audio/receive_msg.mp3'
+        : '/resources/audio/sent_msg.mp3',
+      0.35
+    );
+    const ctx = this.getCtx();
+    if (!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(520, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(880, ctx.currentTime + 0.055);
+    gain.gain.setValueAtTime(0.05, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.06);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.065);
+  }
+
+  playPlaceObject() {
+    this.playMp3('/resources/audio/pixels.mp3', 0.4);
+    const ctx = this.getCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(330, now);
+    osc.frequency.setValueAtTime(494, now + 0.045);
+    osc.frequency.setValueAtTime(659, now + 0.09);
+    gain.gain.setValueAtTime(0.05, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.16);
+  }
+
+  playConsoleClick() {
+    this.playMp3('/resources/audio/cash_register.mp3', 0.3);
+    const ctx = this.getCtx();
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(740, now);
+    osc.frequency.exponentialRampToValueAtTime(440, now + 0.05);
+    gain.gain.setValueAtTime(0.05, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 0.06);
+  }
+
+  playLinkOpen() {
+    this.playMp3('/resources/audio/pixels.mp3', 0.35);
+    this.playPlaceObject();
+  }
+}
+
+export const pixelAudio = new PixelAudioEngine();
+
+export function useRoomStore() {
+  const [objects, setObjects] = useState<RoomObject[]>(DEFAULT_ROOM_OBJECTS);
+  const [projects, setProjects] = useState<ProjectLink[]>(DEFAULT_PROJECT_LINKS);
+  const [pets, setPets] = useState<RoomPet[]>(DEFAULT_ROOM_PETS);
+  const [inventory, setInventory] = useState<InventoryItem[]>(
+    DEFAULT_INVENTORY_ITEMS
+  );
+  const [inventoryStack, setInventoryStack] = useState<InventoryStackLayer[]>(
+    []
+  );
+  const [roomSettings, setRoomSettings] = useState<RoomSettings>(
+    DEFAULT_ROOM_SETTINGS
+  );
+  const [chatBubbles, setChatBubbles] = useState<ChatBubble[]>([]);
+  const [chatHistory, setChatHistory] = useState<ChatBubble[]>([]);
+  const [avatarAction, setAvatarAction] = useState<'none' | 'wave' | 'dance'>(
+    'none'
+  );
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isMusicPlaying, setIsMusicPlaying] = useState(false);
+  const [visitorAvatar, setVisitorAvatar] = useState<VisitorAvatarProfile>(() =>
+    generateRandomVisitorAvatar(() => 0.42)
+  );
+  const [useOwnerSkin, setUseOwnerSkin] = useState(false);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  const lastLocalMutationRef = useRef<number>(0);
+  const syncPostTimerRef = useRef<number | null>(null);
+  const seenChatIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    let hasLocalObjects = false;
+    try {
+      const savedObjs = window.localStorage.getItem(STORAGE_KEY_OBJECTS);
+      const savedProjs = window.localStorage.getItem(STORAGE_KEY_PROJECTS);
+      const savedPets = window.localStorage.getItem(STORAGE_KEY_PETS);
+      const savedInv = window.localStorage.getItem(STORAGE_KEY_INVENTORY);
+      const savedStack = window.localStorage.getItem(
+        STORAGE_KEY_INVENTORY_STACK
+      );
+      const savedSettings = window.localStorage.getItem(
+        STORAGE_KEY_ROOM_SETTINGS
+      );
+      const savedAuth = window.localStorage.getItem(STORAGE_KEY_ADMIN_AUTH);
+      const savedVisitor = window.sessionStorage.getItem(
+        STORAGE_KEY_VISITOR_AVATAR
+      );
+
+      if (savedObjs !== null) {
+        const parsed = JSON.parse(savedObjs);
+        if (Array.isArray(parsed)) {
+          setObjects(parsed);
+          hasLocalObjects = true;
+        }
+      }
+      if (savedProjs) {
+        const parsedProjs = JSON.parse(savedProjs);
+        if (Array.isArray(parsedProjs) && parsedProjs.length > 0) {
+          setProjects(parsedProjs);
+        }
+      }
+      if (savedPets !== null) {
+        const parsedPets = JSON.parse(savedPets);
+        if (Array.isArray(parsedPets)) {
+          setPets(parsedPets);
+        }
+      }
+      if (savedInv !== null) {
+        const parsedInv = JSON.parse(savedInv);
+        if (Array.isArray(parsedInv)) {
+          setInventory(parsedInv);
+        }
+      }
+      if (savedStack !== null) {
+        const parsedStack = JSON.parse(savedStack);
+        if (Array.isArray(parsedStack)) {
+          setInventoryStack(parsedStack);
+        }
+      }
+      if (savedSettings !== null) {
+        const parsedSettings = JSON.parse(savedSettings);
+        setRoomSettings(sanitizeRoomSettings(parsedSettings));
+      }
+      if (savedAuth === 'true') {
+        setIsAdminAuthenticated(true);
+      }
+
+      if (savedVisitor) {
+        const parsedVisitor = JSON.parse(savedVisitor);
+        if (parsedVisitor && typeof parsedVisitor.name === 'string') {
+          setVisitorAvatar(parsedVisitor);
+        } else {
+          const fresh = generateRandomVisitorAvatar();
+          setVisitorAvatar(fresh);
+          window.sessionStorage.setItem(
+            STORAGE_KEY_VISITOR_AVATAR,
+            JSON.stringify(fresh)
+          );
+        }
+      } else {
+        const fresh = generateRandomVisitorAvatar();
+        setVisitorAvatar(fresh);
+        window.sessionStorage.setItem(
+          STORAGE_KEY_VISITOR_AVATAR,
+          JSON.stringify(fresh)
+        );
+      }
+    } catch {
+      // ignore storage errors
+    }
+
+    // Fetch shared server state (/api/room) so any new visitor entering the site sees the Admin's TV & video!
+    fetch('/api/room')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!data) return;
+        if (data.hasCustomState || !hasLocalObjects) {
+          if (Array.isArray(data.objects)) {
+            setObjects(data.objects);
+            try {
+              window.localStorage.setItem(
+                STORAGE_KEY_OBJECTS,
+                JSON.stringify(data.objects)
+              );
+            } catch {}
+          }
+          if (Array.isArray(data.projects) && data.projects.length > 0) {
+            setProjects(data.projects);
+          }
+          if (Array.isArray(data.pets)) {
+            setPets(data.pets);
+          }
+          if (Array.isArray(data.inventory)) {
+            setInventory(data.inventory);
+          }
+          if (data.settings) {
+            setRoomSettings(sanitizeRoomSettings(data.settings));
+          }
+        } else if (hasLocalObjects && !data.hasCustomState) {
+          // Re-seed serverless memory after a Vercel cold start from local custom state
+          try {
+            const localObjs = JSON.parse(
+              window.localStorage.getItem(STORAGE_KEY_OBJECTS) || 'null'
+            );
+            const localSettings = JSON.parse(
+              window.localStorage.getItem(STORAGE_KEY_ROOM_SETTINGS) || 'null'
+            );
+            if (Array.isArray(localObjs)) {
+              fetch('/api/room', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  objects: localObjs,
+                  settings: localSettings || undefined,
+                }),
+              }).catch(() => {});
+            }
+          } catch {}
+        }
+      })
+      .catch(() => {});
+
+    // Seed initial greeting bubbles with fresh timestamps so they animate upward and auto-remove after 4.2s
+    const now = Date.now();
+    setChatBubbles(
+      INITIAL_CHAT_BUBBLES.slice(-2).map((b, idx) => ({
+        ...b,
+        createdAt: now - (1 - idx) * 600,
+      }))
+    );
+    setIsLoaded(true);
+  }, []);
+
+  // Poll /api/room every 4.5s (and skip when tab is hidden) to optimize Vercel Free Tier invocations
+  useEffect(() => {
+    const syncTimer = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      // Skip polling overwrite while admin is actively dragging real-time sliders
+      if (Date.now() - lastLocalMutationRef.current < 2500) return;
+      fetch('/api/room')
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => {
+          if (!data || !data.hasCustomState) return;
+          if (Date.now() - lastLocalMutationRef.current < 2500) return;
+          if (Array.isArray(data.objects)) {
+            setObjects((prev) => {
+              const prevJson = JSON.stringify(prev);
+              const nextJson = JSON.stringify(data.objects);
+              if (prevJson === nextJson) return prev;
+              try {
+                window.localStorage.setItem(STORAGE_KEY_OBJECTS, nextJson);
+              } catch {}
+              return data.objects;
+            });
+          }
+          if (Array.isArray(data.pets)) {
+            setPets((prev) => {
+              const prevJson = JSON.stringify(prev);
+              const nextJson = JSON.stringify(data.pets);
+              if (prevJson === nextJson) return prev;
+              try {
+                window.localStorage.setItem(STORAGE_KEY_PETS, nextJson);
+              } catch {}
+              return data.pets;
+            });
+          }
+          if (data.settings) {
+            setRoomSettings((prev) => {
+              const nextS = sanitizeRoomSettings(data.settings);
+              if (JSON.stringify(prev) === JSON.stringify(nextS)) return prev;
+              try {
+                window.localStorage.setItem(
+                  STORAGE_KEY_ROOM_SETTINGS,
+                  JSON.stringify(nextS)
+                );
+              } catch {}
+              return nextS;
+            });
+          }
+          if (Array.isArray(data.chatLog)) {
+            data.chatLog.forEach((remoteBubble: ChatBubble) => {
+              if (!remoteBubble?.id || seenChatIdsRef.current.has(remoteBubble.id)) {
+                return;
+              }
+              seenChatIdsRef.current.add(remoteBubble.id);
+              if (Date.now() - remoteBubble.createdAt < 12000) {
+                setChatBubbles((prev) => [
+                  ...prev.slice(-4),
+                  { ...remoteBubble, createdAt: Date.now() },
+                ]);
+                setChatHistory((prev) => [...prev.slice(-30), remoteBubble]);
+              }
+            });
+          }
+        })
+        .catch(() => {});
+    }, 4500);
+    return () => window.clearInterval(syncTimer);
+  }, []);
+
+  // Automatically remove interaction notification bubbles after 4.2 seconds
+  useEffect(() => {
+    const pruneTimer = window.setInterval(() => {
+      const now = Date.now();
+      setChatBubbles((prev) => {
+        if (prev.length === 0) return prev;
+        const active = filterActiveChatBubbles(prev, now, 4200);
+        return active.length === prev.length ? prev : active;
+      });
+    }, 250);
+    return () => window.clearInterval(pruneTimer);
+  }, []);
+
+  const persistState = useCallback(
+    (nextObjects: RoomObject[], nextProjects: ProjectLink[]) => {
+      const now = Date.now();
+      lastLocalMutationRef.current = now;
+      setLastSavedAt(now);
+      setIsSaving(true);
+      try {
+        window.localStorage.setItem(
+          STORAGE_KEY_OBJECTS,
+          JSON.stringify(nextObjects)
+        );
+        window.localStorage.setItem(
+          STORAGE_KEY_PROJECTS,
+          JSON.stringify(nextProjects)
+        );
+      } catch {
+        // ignore
+      }
+      if (syncPostTimerRef.current !== null) {
+        window.clearTimeout(syncPostTimerRef.current);
+      }
+      syncPostTimerRef.current = window.setTimeout(() => {
+        fetch('/api/room', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ objects: nextObjects, projects: nextProjects }),
+        })
+          .catch(() => {})
+          .finally(() => {
+            setIsSaving(false);
+            setLastSavedAt(Date.now());
+          });
+      }, 220);
+    },
+    []
+  );
+
+  const persistInventory = useCallback((nextInventory: InventoryItem[]) => {
+    const now = Date.now();
+    lastLocalMutationRef.current = now;
+    setLastSavedAt(now);
+    setIsSaving(true);
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY_INVENTORY,
+        JSON.stringify(nextInventory)
+      );
+    } catch {
+      // ignore
+    }
+    fetch('/api/room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inventory: nextInventory }),
+    })
+      .catch(() => {})
+      .finally(() => {
+        setIsSaving(false);
+        setLastSavedAt(Date.now());
+      });
+  }, []);
+
+  const persistInventoryStack = useCallback(
+    (nextStack: InventoryStackLayer[]) => {
+      try {
+        window.localStorage.setItem(
+          STORAGE_KEY_INVENTORY_STACK,
+          JSON.stringify(nextStack)
+        );
+      } catch {
+        // ignore
+      }
+    },
+    []
+  );
+
+  const persistPets = useCallback((nextPets: RoomPet[]) => {
+    try {
+      window.localStorage.setItem(STORAGE_KEY_PETS, JSON.stringify(nextPets));
+    } catch {
+      // ignore
+    }
+    fetch('/api/room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pets: nextPets }),
+    }).catch(() => {});
+  }, []);
+
+  const updateRoomSettings = useCallback(
+    (patch: Partial<RoomSettings>) => {
+      const now = Date.now();
+      lastLocalMutationRef.current = now;
+      setLastSavedAt(now);
+      setIsSaving(true);
+      setRoomSettings((prev) => {
+        const next = sanitizeRoomSettings({ ...prev, ...patch });
+        try {
+          window.localStorage.setItem(
+            STORAGE_KEY_ROOM_SETTINGS,
+            JSON.stringify(next)
+          );
+        } catch {}
+        fetch('/api/room', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: next }),
+        })
+          .catch(() => {})
+          .finally(() => {
+            setIsSaving(false);
+            setLastSavedAt(Date.now());
+          });
+        return next;
+      });
+    },
+    []
+  );
+
+  const addObject = useCallback(
+    (
+      input: {
+        type: RoomObjectType;
+        label: string;
+        x: number;
+        y: number;
+        z?: number;
+        rotation?: IsometricRotation;
+        rotationAngle?: number;
+        scale?: number;
+        colorVariant?: string;
+        projectId?: string;
+        videoUrl?: string;
+        imageUrl?: string;
+        customNote?: string;
+        consumeInventoryItemId?: string;
+      },
+      mode: PlacementMode = 'replace'
+    ) => {
+      const { objects: next, placed } = applyTilePlacement(
+        objects,
+        {
+          id: `obj-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          type: input.type,
+          label: input.label.trim(),
+          x: input.x,
+          y: input.y,
+          z: input.z,
+          rotation: input.rotation || 'se',
+          rotationAngle: input.rotationAngle,
+          scale: input.scale,
+          colorVariant: input.colorVariant,
+          projectId: input.projectId,
+          videoUrl: input.videoUrl,
+          imageUrl: input.imageUrl,
+          customNote: input.customNote,
+        },
+        mode
+      );
+
+      setObjects(next);
+      persistState(next, projects);
+
+      if (input.consumeInventoryItemId) {
+        setInventory((prev) => {
+          const nextInv = removeInventoryItemById(
+            prev,
+            input.consumeInventoryItemId!,
+            1
+          );
+          persistInventory(nextInv);
+          return nextInv;
+        });
+      }
+
+      pixelAudio.playPlaceObject();
+      return placed;
+    },
+    [objects, projects, persistState, persistInventory]
+  );
+
+  const updateObjectVideoUrl = useCallback(
+    (targetObjectId: string, rawVideoUrl: string) => {
+      const next = updateRoomObjectVideoUrl(
+        objects,
+        targetObjectId,
+        rawVideoUrl
+      );
+      setObjects(next);
+      persistState(next, projects);
+      pixelAudio.playPlaceObject();
+      return next !== objects;
+    },
+    [objects, projects, persistState]
+  );
+
+  const randomizeVisitorAvatar = useCallback(() => {
+    const fresh = generateRandomVisitorAvatar();
+    setVisitorAvatar(fresh);
+    setUseOwnerSkin(false);
+    try {
+      window.sessionStorage.setItem(
+        STORAGE_KEY_VISITOR_AVATAR,
+        JSON.stringify(fresh)
+      );
+    } catch {}
+    pixelAudio.playPlaceObject();
+    return fresh;
+  }, []);
+
+  const toggleOwnerSkin = useCallback(() => {
+    setUseOwnerSkin((prev) => !prev);
+    pixelAudio.playConsoleClick();
+  }, []);
+
+  const updateVisitorUsername = useCallback((newName: string) => {
+    const cleaned = newName.trim().slice(0, 22);
+    if (!cleaned) return;
+    setVisitorAvatar((prev) => {
+      const updated = { ...prev, name: cleaned };
+      try {
+        window.sessionStorage.setItem(
+          STORAGE_KEY_VISITOR_AVATAR,
+          JSON.stringify(updated)
+        );
+      } catch {}
+      return updated;
+    });
+    setUseOwnerSkin(false);
+    pixelAudio.playConsoleClick();
+  }, []);
+
+  const triggerAvatarAction = useCallback(
+    (action: 'none' | 'wave' | 'dance') => {
+      setAvatarAction((prev) => (prev === action && action === 'dance' ? 'none' : action));
+      pixelAudio.playPlaceObject();
+      if (action === 'wave') {
+        window.setTimeout(() => {
+          setAvatarAction((cur) => (cur === 'wave' ? 'none' : cur));
+        }, 2400);
+      }
+    },
+    []
+  );
+
+  const moveObject = useCallback(
+    (
+      id: string,
+      targetX: number,
+      targetY: number,
+      mode: PlacementMode = 'replace'
+    ) => {
+      const next = moveRoomObjectToTile(objects, id, targetX, targetY, mode);
+      setObjects(next);
+      persistState(next, projects);
+      pixelAudio.playPlaceObject();
+    },
+    [objects, projects, persistState]
+  );
+
+  const clearTile = useCallback(
+    (x: number, y: number) => {
+      const next = objects.filter((o) => o.x !== x || o.y !== y);
+      setObjects(next);
+      persistState(next, projects);
+      pixelAudio.playConsoleClick();
+    },
+    [objects, projects, persistState]
+  );
+
+  const removeObject = useCallback(
+    (id: string) => {
+      const next = objects.filter((o) => o.id !== id);
+      setObjects(next);
+      persistState(next, projects);
+      pixelAudio.playConsoleClick();
+    },
+    [objects, projects, persistState]
+  );
+
+  const updateObjectZ = useCallback(
+    (id: string, deltaZ: number) => {
+      const next = objects.map((o) => {
+        if (o.id !== id) return o;
+        const nextZ = Math.max(0, Math.min(6, o.z + deltaZ));
+        return { ...o, z: nextZ };
+      });
+      setObjects(next);
+      persistState(next, projects);
+      pixelAudio.playConsoleClick();
+    },
+    [objects, projects, persistState]
+  );
+
+  const rotateObject = useCallback(
+    (id: string, step: 1 | -1 = 1) => {
+      const next = objects.map((o) => {
+        if (o.id !== id) return o;
+        const nextRot = getNextRotation(o.rotation, step);
+        return {
+          ...o,
+          rotation: nextRot,
+          rotationAngle: rotationToAngle(nextRot),
+        };
+      });
+      setObjects(next);
+      persistState(next, projects);
+      pixelAudio.playConsoleClick();
+    },
+    [objects, projects, persistState]
+  );
+
+  const updateObjectTransform = useCallback(
+    (
+      id: string,
+      transform: {
+        scale?: number;
+        rotation?: IsometricRotation;
+        rotationAngle?: number;
+        colorVariant?: string;
+        imageUrl?: string;
+        label?: string;
+      }
+    ) => {
+      setObjects((prev) => {
+        const next = updateRoomObjectTransform(prev, id, transform);
+        persistState(next, projects);
+        return next;
+      });
+    },
+    [projects, persistState]
+  );
+
+  const addInventoryItem = useCallback(
+    (input: {
+      type: RoomObjectType;
+      label?: string;
+      colorVariant?: string;
+      quantity?: number;
+      defaultScale?: number;
+      defaultRotation?: IsometricRotation;
+      defaultRotationAngle?: number;
+      projectId?: string;
+      videoUrl?: string;
+    }) => {
+      setInventory((prev) => {
+        const next = addOrRestockInventoryItem(prev, input);
+        persistInventory(next);
+        return next;
+      });
+      pixelAudio.playConsoleClick();
+    },
+    [persistInventory]
+  );
+
+  const removeInventoryItem = useCallback(
+    (itemId: string, decrementBy: number = 1) => {
+      setInventory((prev) => {
+        const next = removeInventoryItemById(prev, itemId, decrementBy);
+        persistInventory(next);
+        return next;
+      });
+      pixelAudio.playConsoleClick();
+    },
+    [persistInventory]
+  );
+
+  const updateInventoryItemTransform = useCallback(
+    (
+      itemId: string,
+      patch: {
+        defaultScale?: number;
+        defaultRotation?: IsometricRotation;
+        defaultRotationAngle?: number;
+        colorVariant?: string;
+      }
+    ) => {
+      setInventory((prev) => {
+        const next = prev.map((item) => {
+          if (item.id !== itemId) return item;
+          let nextRot = item.defaultRotation;
+          let nextAngle = item.defaultRotationAngle;
+          if (typeof patch.defaultRotationAngle === 'number') {
+            nextAngle = normalizeRotationAngle(
+              patch.defaultRotationAngle,
+              item.defaultRotation
+            );
+            nextRot =
+              patch.defaultRotation || angleToIsometricRotation(nextAngle);
+          } else if (patch.defaultRotation) {
+            nextRot = patch.defaultRotation;
+            nextAngle = rotationToAngle(patch.defaultRotation);
+          }
+          return {
+            ...item,
+            defaultScale:
+              typeof patch.defaultScale === 'number'
+                ? clampObjectScale(patch.defaultScale)
+                : item.defaultScale,
+            defaultRotation: nextRot,
+            defaultRotationAngle: nextAngle,
+            colorVariant: patch.colorVariant ?? item.colorVariant,
+          };
+        });
+        persistInventory(next);
+        return next;
+      });
+    },
+    [persistInventory]
+  );
+
+  const pickupObjectToInventory = useCallback(
+    (objectId: string) => {
+      const target = objects.find((o) => o.id === objectId);
+      if (!target) return;
+      const nextObjects = objects.filter((o) => o.id !== objectId);
+      setObjects(nextObjects);
+      persistState(nextObjects, projects);
+
+      setInventory((prev) => {
+        const nextInv = returnRoomObjectToInventory(prev, target);
+        persistInventory(nextInv);
+        return nextInv;
+      });
+      pixelAudio.playConsoleClick();
+    },
+    [objects, projects, persistState, persistInventory]
+  );
+
+  const pushToInventoryStack = useCallback(
+    (layerInput: Omit<InventoryStackLayer, 'id'>) => {
+      setInventoryStack((prev) => {
+        if (prev.length >= 6) return prev;
+        const layer: InventoryStackLayer = {
+          ...layerInput,
+          id: `stack-layer-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+          scale: clampObjectScale(layerInput.scale),
+          rotationAngle: normalizeRotationAngle(
+            layerInput.rotationAngle,
+            layerInput.rotation
+          ),
+        };
+        const next = [...prev, layer];
+        persistInventoryStack(next);
+        return next;
+      });
+      pixelAudio.playConsoleClick();
+    },
+    [persistInventoryStack]
+  );
+
+  const updateInventoryStackLayer = useCallback(
+    (
+      layerId: string,
+      patch: Partial<Omit<InventoryStackLayer, 'id'>>
+    ) => {
+      setInventoryStack((prev) => {
+        const next = prev.map((layer) => {
+          if (layer.id !== layerId) return layer;
+          let nextRot = layer.rotation;
+          let nextAngle = layer.rotationAngle;
+          if (typeof patch.rotationAngle === 'number') {
+            nextAngle = normalizeRotationAngle(
+              patch.rotationAngle,
+              layer.rotation
+            );
+            nextRot = patch.rotation || angleToIsometricRotation(nextAngle);
+          } else if (patch.rotation) {
+            nextRot = patch.rotation;
+            nextAngle = rotationToAngle(patch.rotation);
+          }
+          return {
+            ...layer,
+            ...patch,
+            scale:
+              typeof patch.scale === 'number'
+                ? clampObjectScale(patch.scale)
+                : layer.scale,
+            rotation: nextRot,
+            rotationAngle: nextAngle,
+          };
+        });
+        persistInventoryStack(next);
+        return next;
+      });
+    },
+    [persistInventoryStack]
+  );
+
+  const removeFromInventoryStack = useCallback(
+    (layerId: string) => {
+      setInventoryStack((prev) => {
+        const next = prev.filter((l) => l.id !== layerId);
+        persistInventoryStack(next);
+        return next;
+      });
+      pixelAudio.playConsoleClick();
+    },
+    [persistInventoryStack]
+  );
+
+  const reorderInventoryStack = useCallback(
+    (layerId: string, direction: 'up' | 'down') => {
+      setInventoryStack((prev) => {
+        const idx = prev.findIndex((l) => l.id === layerId);
+        if (idx === -1) return prev;
+        const targetIdx = direction === 'up' ? idx + 1 : idx - 1;
+        if (targetIdx < 0 || targetIdx >= prev.length) return prev;
+        const copy = [...prev];
+        const [item] = copy.splice(idx, 1);
+        copy.splice(targetIdx, 0, item);
+        persistInventoryStack(copy);
+        return copy;
+      });
+      pixelAudio.playConsoleClick();
+    },
+    [persistInventoryStack]
+  );
+
+  const clearInventoryStack = useCallback(() => {
+    setInventoryStack([]);
+    persistInventoryStack([]);
+    pixelAudio.playConsoleClick();
+  }, [persistInventoryStack]);
+
+  const placeInventoryStackAtTile = useCallback(
+    (
+      targetX: number,
+      targetY: number,
+      mode: PlacementMode = 'stack'
+    ): RoomObject[] => {
+      if (inventoryStack.length === 0) return [];
+      const { objects: nextObjects, placedObjects } = applyInventoryStackAtTile(
+        objects,
+        inventoryStack,
+        targetX,
+        targetY,
+        mode
+      );
+      setObjects(nextObjects);
+      persistState(nextObjects, projects);
+
+      // Decrement inventory quantities for layers that reference an inventoryItemId
+      setInventory((prev) => {
+        let nextInv = [...prev];
+        inventoryStack.forEach((layer) => {
+          if (layer.inventoryItemId) {
+            nextInv = removeInventoryItemById(
+              nextInv,
+              layer.inventoryItemId,
+              1
+            );
+          }
+        });
+        persistInventory(nextInv);
+        return nextInv;
+      });
+
+      pixelAudio.playPlaceObject();
+      return placedObjects;
+    },
+    [
+      inventoryStack,
+      objects,
+      projects,
+      persistState,
+      persistInventory,
+    ]
+  );
+
+  const resetInventoryToDefault = useCallback(() => {
+    setInventory(DEFAULT_INVENTORY_ITEMS);
+    setInventoryStack([]);
+    persistInventory(DEFAULT_INVENTORY_ITEMS);
+    persistInventoryStack([]);
+    pixelAudio.playPlaceObject();
+  }, [persistInventory, persistInventoryStack]);
+
+  const addProjectLink = useCallback(
+    (
+      projectInput: Omit<ProjectLink, 'id'>,
+      spawnScreen?: {
+        screenType: 'neon_bulletin' | 'floating_screen';
+        x: number;
+        y: number;
+      }
+    ) => {
+      const newProj: ProjectLink = {
+        ...projectInput,
+        id: `proj-${Date.now()}`,
+      };
+      const nextProjects = [...projects, newProj];
+      let nextObjects = objects;
+
+      if (spawnScreen) {
+        const z = getNextStackHeightAtTile(
+          spawnScreen.x,
+          spawnScreen.y,
+          objects
+        );
+        const screenObj: RoomObject = {
+          id: `obj-screen-${Date.now()}`,
+          type: spawnScreen.screenType,
+          label: `${
+            spawnScreen.screenType === 'neon_bulletin'
+              ? 'Neon Bulletin'
+              : 'Floating Screen'
+          }: ${newProj.title}`,
+          x: spawnScreen.x,
+          y: spawnScreen.y,
+          z,
+          rotation: 'se',
+          colorVariant: newProj.accentColor,
+          walkable: false,
+          projectId: newProj.id,
+          createdAt: new Date().toISOString(),
+        };
+        nextObjects = [...objects, screenObj];
+        setObjects(nextObjects);
+      }
+
+      setProjects(nextProjects);
+      persistState(nextObjects, nextProjects);
+      pixelAudio.playPlaceObject();
+      return newProj;
+    },
+    [objects, projects, persistState]
+  );
+
+  const removePet = useCallback(
+    (petId: string) => {
+      setPets((prev) => {
+        const next = removeRoomPet(prev, petId);
+        persistPets(next);
+        return next;
+      });
+      if (petId === 'draco-dragon') {
+        const nextObjs = objects.filter((o) => o.type !== 'pet_dragon');
+        if (nextObjs.length !== objects.length) {
+          setObjects(nextObjs);
+          persistState(nextObjs, projects);
+        }
+      }
+      pixelAudio.playConsoleClick();
+    },
+    [objects, projects, persistState, persistPets]
+  );
+
+  const clearAllPets = useCallback(() => {
+    setPets([]);
+    persistPets([]);
+    const nextObjs = objects.filter((o) => o.type !== 'pet_dragon');
+    if (nextObjs.length !== objects.length) {
+      setObjects(nextObjs);
+      persistState(nextObjs, projects);
+    }
+    pixelAudio.playConsoleClick();
+  }, [objects, projects, persistState, persistPets]);
+
+  const restoreDefaultPets = useCallback(() => {
+    setPets(DEFAULT_ROOM_PETS);
+    persistPets(DEFAULT_ROOM_PETS);
+    pixelAudio.playPlaceObject();
+  }, [persistPets]);
+
+  const resetRoomToDefault = useCallback(() => {
+    setObjects(DEFAULT_ROOM_OBJECTS);
+    setProjects(DEFAULT_PROJECT_LINKS);
+    setPets(DEFAULT_ROOM_PETS);
+    setRoomSettings(DEFAULT_ROOM_SETTINGS);
+    persistState(DEFAULT_ROOM_OBJECTS, DEFAULT_PROJECT_LINKS);
+    persistPets(DEFAULT_ROOM_PETS);
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY_ROOM_SETTINGS,
+        JSON.stringify(DEFAULT_ROOM_SETTINGS)
+      );
+    } catch {}
+    fetch('/api/room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reset: true }),
+    }).catch(() => {});
+    pixelAudio.playPlaceObject();
+  }, [persistState, persistPets]);
+
+  const applyOrganizedPreset = useCallback(() => {
+    setObjects(ORGANIZED_ROOM_OBJECTS);
+    persistState(ORGANIZED_ROOM_OBJECTS, projects);
+    pixelAudio.playPlaceObject();
+  }, [projects, persistState]);
+
+  const clearFloorToMinimal = useCallback(() => {
+    const minimal: RoomObject[] = [];
+    setObjects(minimal);
+    persistState(minimal, projects);
+    pixelAudio.playConsoleClick();
+  }, [projects, persistState]);
+
+  const pushChatBubble = useCallback(
+    (
+      speaker: string,
+      text: string,
+      speakerType: ChatBubble['speakerType'] = 'avatar',
+      isShout: boolean = false
+    ) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      pixelAudio.playChatPop(speakerType === 'cat' || speakerType === 'dragon');
+      const newBubble: ChatBubble = {
+        id: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        speaker,
+        speakerType,
+        text: trimmed,
+        isShout,
+        offsetY: 4,
+        createdAt: Date.now(),
+      };
+      seenChatIdsRef.current.add(newBubble.id);
+      setChatBubbles((prev) => {
+        const shifted = prev
+          .map((b) => ({ ...b, offsetY: b.offsetY + 28 }))
+          .filter((b) => b.offsetY < 200);
+        return [...shifted, newBubble];
+      });
+      setChatHistory((prev) => [...prev.slice(-30), newBubble]);
+
+      if (speakerType === 'avatar') {
+        fetch('/api/room', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ chatBubble: newBubble }),
+        }).catch(() => {});
+      }
+    },
+    []
+  );
+
+  const loginAdmin = useCallback(() => {
+    setIsAdminAuthenticated(true);
+    try {
+      window.localStorage.setItem(STORAGE_KEY_ADMIN_AUTH, 'true');
+    } catch {}
+    pixelAudio.playPlaceObject();
+  }, []);
+
+  const logoutAdmin = useCallback(() => {
+    setIsAdminAuthenticated(false);
+    try {
+      window.localStorage.removeItem(STORAGE_KEY_ADMIN_AUTH);
+    } catch {}
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    setIsMuted((prev) => {
+      const next = !prev;
+      pixelAudio.muted = next;
+      if (next) {
+        pixelAudio.stopAmbientMusic();
+        setIsMusicPlaying(false);
+      } else {
+        pixelAudio.startAmbientMusic();
+        setIsMusicPlaying(true);
+      }
+      return next;
+    });
+  }, []);
+
+  const toggleAmbientMusic = useCallback(() => {
+    if (pixelAudio.musicPlaying) {
+      pixelAudio.stopAmbientMusic();
+      setIsMusicPlaying(false);
+    } else {
+      pixelAudio.muted = false;
+      setIsMuted(false);
+      pixelAudio.startAmbientMusic();
+      setIsMusicPlaying(true);
+    }
+  }, []);
+
+  const ensureAmbientMusicStarted = useCallback(() => {
+    if (!pixelAudio.muted && !pixelAudio.musicPlaying) {
+      pixelAudio.startAmbientMusic();
+      setIsMusicPlaying(true);
+    }
+  }, []);
+
+  return {
+    objects,
+    projects,
+    pets,
+    inventory,
+    inventoryStack,
+    roomSettings,
+    chatBubbles,
+    chatHistory,
+    avatarAction,
+    isLoaded,
+    isAdminAuthenticated,
+    isMuted,
+    isMusicPlaying,
+    visitorAvatar,
+    useOwnerSkin,
+    lastSavedAt,
+    isSaving,
+    addObject,
+    moveObject,
+    clearTile,
+    removeObject,
+    removePet,
+    clearAllPets,
+    restoreDefaultPets,
+    updateObjectZ,
+    rotateObject,
+    updateObjectTransform,
+    addInventoryItem,
+    removeInventoryItem,
+    updateInventoryItemTransform,
+    pickupObjectToInventory,
+    pushToInventoryStack,
+    updateInventoryStackLayer,
+    removeFromInventoryStack,
+    reorderInventoryStack,
+    clearInventoryStack,
+    placeInventoryStackAtTile,
+    resetInventoryToDefault,
+    updateObjectVideoUrl,
+    randomizeVisitorAvatar,
+    updateVisitorUsername,
+    triggerAvatarAction,
+    updateRoomSettings,
+    toggleOwnerSkin,
+    addProjectLink,
+    resetRoomToDefault,
+    applyOrganizedPreset,
+    clearFloorToMinimal,
+    pushChatBubble,
+    loginAdmin,
+    logoutAdmin,
+    toggleMute,
+    toggleAmbientMusic,
+    ensureAmbientMusicStarted,
+  };
+}
