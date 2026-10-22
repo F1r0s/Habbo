@@ -1,0 +1,6 @@
+{
+  "name": "HabboFolio Isometric Room & Admin Console",
+  "description": "An isometric 2D pixel art room inspired by classic Habbo Hotel aesthetics, densely packed with interactive project screens, digital pets, stacked sofas, royal crowns, and a protected /admin control console.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

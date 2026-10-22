@@ -1,0 +1,65 @@
+import { NextRequest, NextResponse } from 'next/server';
+import {
+  DEFAULT_ROOM_OBJECTS,
+  DEFAULT_PROJECT_LINKS,
+  DEFAULT_ROOM_PETS,
+  RoomObject,
+  ProjectLink,
+  RoomPet,
+} from '@/lib/room-engine';
+
+// Server-side store so any visitor entering the website sees the same TV, video, and room layout set by the Admin
+let serverObjects: RoomObject[] = [...DEFAULT_ROOM_OBJECTS];
+let serverProjects: ProjectLink[] = [...DEFAULT_PROJECT_LINKS];
+let serverPets: RoomPet[] = [...DEFAULT_ROOM_PETS];
+let hasCustomState = false;
+let updatedAt = 0;
+
+export async function GET() {
+  return NextResponse.json({
+    objects: serverObjects,
+    projects: serverProjects,
+    pets: serverPets,
+    hasCustomState,
+    updatedAt,
+  });
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json();
+    if (Array.isArray(body.objects)) {
+      serverObjects = body.objects;
+      hasCustomState = true;
+      updatedAt = Date.now();
+    }
+    if (Array.isArray(body.projects)) {
+      serverProjects = body.projects;
+      hasCustomState = true;
+      updatedAt = Date.now();
+    }
+    if (Array.isArray(body.pets)) {
+      serverPets = body.pets;
+      hasCustomState = true;
+      updatedAt = Date.now();
+    }
+    if (body.reset === true) {
+      serverObjects = [...DEFAULT_ROOM_OBJECTS];
+      serverProjects = [...DEFAULT_PROJECT_LINKS];
+      serverPets = [...DEFAULT_ROOM_PETS];
+      hasCustomState = false;
+      updatedAt = Date.now();
+    }
+    return NextResponse.json({
+      ok: true,
+      objects: serverObjects,
+      projects: serverProjects,
+      pets: serverPets,
+      hasCustomState,
+      updatedAt,
+    });
+  } catch {
+    return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
+  }
+}
+
