@@ -2356,53 +2356,6 @@ function drawHabboAvatar(
     );
     return;
   }
-  if (isSitting) {
-    const sitSprite = isBackView
-      ? atlas.higmaSittingNW || atlas.higmaSittingSW
-      : atlas.higmaSittingSW;
-    if (sitSprite) {
-      ctx.save();
-      const seatShiftX = isMirrored ? 4 : -4;
-      const drawX = Math.round(sx + seatShiftX);
-      const drawY = Math.round(sy - 52);
-
-      if (isMirrored) {
-        ctx.translate(drawX, 0);
-        ctx.scale(-1, 1);
-        ctx.drawImage(sitSprite, Math.round(-sitSprite.width / 2), drawY);
-      } else {
-        ctx.drawImage(sitSprite, Math.round(drawX - sitSprite.width / 2), drawY);
-      }
-      ctx.restore();
-      return;
-    }
-  }
-
-  // Walking & Standing 4-way animated sprite
-  const frameArray = isBackView ? atlas.higmaWalkNW : atlas.higmaWalkSW;
-  const walkFrameIdx = isWalking ? (Math.floor(tick * 0.28) % 3) + 1 : 0;
-  const walkSprite =
-    frameArray && frameArray.length > walkFrameIdx
-      ? frameArray[walkFrameIdx]
-      : atlas.higmaAvatar || atlas.openHotelAvatar;
-
-  if (walkSprite) {
-    ctx.save();
-    const walkBob = isWalking ? Math.round(Math.abs(Math.sin(tick * 0.35)) * 2) : 0;
-    const drawX = Math.round(sx);
-    const drawY = Math.round(sy + TILE_HEIGHT - walkSprite.height + 5 - walkBob);
-
-    if (isMirrored) {
-      ctx.translate(drawX, 0);
-      ctx.scale(-1, 1);
-      ctx.drawImage(walkSprite, Math.round(-walkSprite.width / 2), drawY);
-    } else {
-      ctx.drawImage(walkSprite, Math.round(drawX - walkSprite.width / 2), drawY);
-    }
-    ctx.restore();
-    return;
-  }
-
   // Fallback pixel avatar if image not yet decoded
   drawIsoPrism(
     ctx,

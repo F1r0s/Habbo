@@ -3,7 +3,6 @@ import {
   DEFAULT_ROOM_OBJECTS,
   DEFAULT_PROJECT_LINKS,
   DEFAULT_ROOM_PETS,
-<<<<<<< HEAD
   DEFAULT_INVENTORY_ITEMS,
   DEFAULT_ROOM_SETTINGS,
   RoomObject,
@@ -40,31 +39,13 @@ export async function GET() {
       serverObjects = [...serverObjects, ...defaultPosters];
     }
   }
-=======
-  RoomObject,
-  ProjectLink,
-  RoomPet,
-} from '@/lib/room-engine';
-
-// Server-side store so any visitor entering the website sees the same TV, video, and room layout set by the Admin
-let serverObjects: RoomObject[] = [...DEFAULT_ROOM_OBJECTS];
-let serverProjects: ProjectLink[] = [...DEFAULT_PROJECT_LINKS];
-let serverPets: RoomPet[] = [...DEFAULT_ROOM_PETS];
-let hasCustomState = false;
-let updatedAt = 0;
-
-export async function GET() {
->>>>>>> f667466a47eb0c21dc8115f0388783dbbd002081
   return NextResponse.json({
     objects: serverObjects,
     projects: serverProjects,
     pets: serverPets,
-<<<<<<< HEAD
     inventory: serverInventory,
     settings: serverSettings,
     chatLog: serverChatLog.slice(-12),
-=======
->>>>>>> f667466a47eb0c21dc8115f0388783dbbd002081
     hasCustomState,
     updatedAt,
   });
@@ -88,7 +69,6 @@ export async function POST(req: NextRequest) {
       hasCustomState = true;
       updatedAt = Date.now();
     }
-<<<<<<< HEAD
     if (Array.isArray(body.inventory)) {
       serverInventory = body.inventory;
       hasCustomState = true;
@@ -116,17 +96,12 @@ export async function POST(req: NextRequest) {
       };
       serverChatLog = [...serverChatLog.slice(-15), bubble];
     }
-=======
->>>>>>> f667466a47eb0c21dc8115f0388783dbbd002081
     if (body.reset === true) {
       serverObjects = [...DEFAULT_ROOM_OBJECTS];
       serverProjects = [...DEFAULT_PROJECT_LINKS];
       serverPets = [...DEFAULT_ROOM_PETS];
-<<<<<<< HEAD
       serverInventory = [...DEFAULT_INVENTORY_ITEMS];
       serverSettings = { ...DEFAULT_ROOM_SETTINGS };
-=======
->>>>>>> f667466a47eb0c21dc8115f0388783dbbd002081
       hasCustomState = false;
       updatedAt = Date.now();
     }
@@ -135,12 +110,9 @@ export async function POST(req: NextRequest) {
       objects: serverObjects,
       projects: serverProjects,
       pets: serverPets,
-<<<<<<< HEAD
       inventory: serverInventory,
       settings: serverSettings,
       chatLog: serverChatLog.slice(-12),
-=======
->>>>>>> f667466a47eb0c21dc8115f0388783dbbd002081
       hasCustomState,
       updatedAt,
     });
@@ -148,4 +120,3 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
   }
 }
-

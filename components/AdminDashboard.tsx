@@ -1698,7 +1698,7 @@ export default function AdminDashboard() {
                   </div>
                 )}
               </div>
-            ) : null}
+            )}
 
             {warehouseTab === 'architecture' && (
               <div
