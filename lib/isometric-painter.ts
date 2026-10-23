@@ -11,6 +11,7 @@ import {
   VisitorAvatarProfile,
   InventoryStackLayer,
   RoomSettings,
+  HeldDrinkType,
   DEFAULT_ROOM_SETTINGS,
   OBJECT_CATALOG,
   DEFAULT_POSTER_IMAGES,
@@ -145,6 +146,7 @@ export interface RenderRoomParams {
   visitorAvatar?: VisitorAvatarProfile | null;
   roomSettings?: RoomSettings;
   avatarAction?: 'none' | 'wave' | 'dance';
+  heldDrink?: HeldDrinkType;
   remoteAvatars?: RenderedRemoteAvatar[];
 }
 
@@ -156,6 +158,7 @@ export interface RenderedRemoteAvatar {
   isWalking: boolean;
   isSitting: boolean;
   action: 'none' | 'wave' | 'dance';
+  heldDrink?: HeldDrinkType;
   visitorAvatar: VisitorAvatarProfile | null;
 }
 
@@ -551,17 +554,42 @@ function drawBrickWallsAndFloor(
   ctx.fill();
   ctx.clip();
 
-  if (roomSettings.floorPattern === 'marble_checkers') {
-    const checkerAlt = shadeHexColor(baseFloorFill, 0.9);
+  if (
+    roomSettings.floorPattern === 'marble_checkers' ||
+    roomSettings.floorPattern === 'cobblestone'
+  ) {
+    const checkerAlt = shadeHexColor(
+      baseFloorFill,
+      roomSettings.floorPattern === 'cobblestone' ? 0.82 : 0.9
+    );
     for (let gx = 0; gx < activeGridSize; gx++) {
       for (let gy = 0; gy < activeGridSize; gy++) {
         if ((gx + gy) % 2 === 1) {
           const { sx, sy } = gridToScreen(gx, gy, 0, originX, originY);
-          drawIsoDiamond(ctx, sx, sy, TILE_WIDTH, TILE_HEIGHT, checkerAlt);
+          drawIsoDiamond(
+            ctx,
+            sx,
+            sy,
+            TILE_WIDTH,
+            TILE_HEIGHT,
+            checkerAlt,
+            roomSettings.floorPattern === 'cobblestone'
+              ? floorLineStroke
+              : undefined,
+            1
+          );
         }
       }
     }
-  } else if (roomSettings.floorPattern === 'studio_tile') {
+  } else if (
+    roomSettings.floorPattern === 'studio_tile' ||
+    roomSettings.floorPattern === 'cyber_glass' ||
+    roomSettings.floorPattern === 'emerald_turf'
+  ) {
+    const tileStroke =
+      roomSettings.floorPattern === 'cyber_glass'
+        ? '#38BDF8'
+        : floorLineStroke;
     for (let gx = 0; gx < activeGridSize; gx++) {
       for (let gy = 0; gy < activeGridSize; gy++) {
         const { sx, sy } = gridToScreen(gx, gy, 0, originX, originY);
@@ -572,7 +600,7 @@ function drawBrickWallsAndFloor(
           TILE_WIDTH,
           TILE_HEIGHT,
           baseFloorFill,
-          floorLineStroke,
+          tileStroke,
           1
         );
       }
@@ -837,13 +865,22 @@ function drawRoomObject(
   }
 
   ctx.save();
-  if (hasCustomTransform && obj.type !== 'youtube_tv') {
-    ctx.translate(pivotX, pivotY);
+  if (hasCustomTransform) {
+    const isCatalogPreview = obj.id.startsWith('__');
+    const tvAnchor =
+      obj.type === 'youtube_tv' && !isCatalogPreview
+        ? getTvWallScreenAnchor(obj, originX, originY)
+        : null;
+    const tPivotX = tvAnchor ? tvAnchor.sx : pivotX;
+    const tPivotY = tvAnchor
+      ? tvAnchor.sy + TV_SCREEN_CENTER_OFFSET_Y
+      : pivotY;
+    ctx.translate(tPivotX, tPivotY);
     if (Math.abs(fineTiltDeg) > 0.5) {
       ctx.rotate((fineTiltDeg * Math.PI) / 180);
     }
     ctx.scale(objScale, objScale);
-    ctx.translate(-pivotX, -pivotY);
+    ctx.translate(-tPivotX, -tPivotY);
   }
 
   switch (obj.type) {
@@ -1655,6 +1692,180 @@ function drawRoomObject(
       ctx.restore();
       break;
     }
+
+    case 'dispenser_coffee':
+    case 'dispenser_cola':
+    case 'dispenser_juice': {
+      const isCoffee = obj.type === 'dispenser_coffee';
+      const isCola = obj.type === 'dispenser_cola';
+      const bodyTop = isCoffee
+        ? '#A16207'
+        : isCola
+          ? '#EF4444'
+          : '#FB923C';
+      const bodyLeft = isCoffee
+        ? '#78350F'
+        : isCola
+          ? '#DC2626'
+          : '#EA580C';
+      const bodyRight = isCoffee
+        ? '#451A03'
+        : isCola
+          ? '#991B1B'
+          : '#C2410C';
+      const accent = isCoffee
+        ? '#FDE047'
+        : isCola
+          ? '#FFFFFF'
+          : '#FEF08A';
+      const badgeText = isCoffee ? 'COFFEE' : isCola ? 'COLA' : 'JUICE';
+
+      // Base pedestal counter
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 6,
+        36,
+        18,
+        14,
+        '#E2E8F0',
+        '#94A3B8',
+        '#64748B',
+        '#000000'
+      );
+      // Dispenser tower body
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy - 8,
+        32,
+        16,
+        28,
+        bodyTop,
+        bodyLeft,
+        bodyRight,
+        '#000000'
+      );
+      // Recessed cup dispense niche
+      ctx.fillStyle = '#09090B';
+      ctx.fillRect(Math.round(sx - 7), Math.round(sy - 18), 14, 12);
+      // Little cup waiting inside niche
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(Math.round(sx - 3), Math.round(sy - 12), 6, 6);
+      ctx.fillStyle = isCoffee ? '#78350F' : isCola ? '#DC2626' : '#F97316';
+      ctx.fillRect(Math.round(sx - 3), Math.round(sy - 10), 6, 3);
+
+      // Glowing top sign banner
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(Math.round(sx - 15), Math.round(sy - 35), 30, 10);
+      ctx.fillStyle = bodyLeft;
+      ctx.fillRect(Math.round(sx - 14), Math.round(sy - 34), 28, 8);
+      ctx.fillStyle = accent;
+      ctx.font = 'bold 6px "Volter", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(badgeText, Math.round(sx), Math.round(sy - 28));
+      break;
+    }
+
+    case 'stairs_up':
+    case 'stairs_down': {
+      const isUp = obj.type === 'stairs_up';
+      const stepColTop = obj.colorVariant || (isUp ? '#EAB308' : '#B45309');
+      const stepColLeft = shadeHexColor(stepColTop, 0.82);
+      const stepColRight = shadeHexColor(stepColTop, 0.68);
+      const dirX =
+        effectiveRotation === 'se'
+          ? 1
+          : effectiveRotation === 'nw'
+            ? -1
+            : 0;
+      const dirY =
+        effectiveRotation === 'sw'
+          ? 1
+          : effectiveRotation === 'ne'
+            ? -1
+            : 0;
+
+      // 4 isometric steps ascending or descending
+      for (let s = 0; s < 4; s++) {
+        const t = (s - 1.5) * 0.22;
+        const stepSx = sx + (dirX - dirY) * t * (TILE_WIDTH / 2);
+        const stepSy =
+          sy +
+          (dirX + dirY) * t * (TILE_HEIGHT / 2) +
+          (isUp ? -s * 5 + 6 : s * 3 + 2);
+        const stepH = isUp ? 5 + s * 4 : Math.max(3, 14 - s * 3);
+        drawIsoPrism(
+          ctx,
+          stepSx,
+          stepSy,
+          isUp ? 44 : 40,
+          isUp ? 14 : 13,
+          stepH,
+          stepColTop,
+          stepColLeft,
+          stepColRight,
+          '#000000'
+        );
+      }
+
+      // Chrome handrail post & bar
+      ctx.strokeStyle = '#000000';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(sx - 16, sy + 2);
+      ctx.lineTo(sx + 14, isUp ? sy - 22 : sy + 10);
+      ctx.stroke();
+      ctx.strokeStyle = '#F8FAFC';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      break;
+    }
+
+    case 'upper_floor_tile': {
+      const deckTop = obj.colorVariant || '#CBD5E1';
+      const deckLeft = shadeHexColor(deckTop, 0.82);
+      const deckRight = shadeHexColor(deckTop, 0.68);
+
+      // Corner support pillars from floor to elevated deck
+      drawIsoPrism(
+        ctx,
+        sx - 20,
+        sy + 14,
+        6,
+        3,
+        18,
+        '#64748B',
+        '#475569',
+        '#334155'
+      );
+      drawIsoPrism(
+        ctx,
+        sx + 20,
+        sy + 14,
+        6,
+        3,
+        18,
+        '#64748B',
+        '#475569',
+        '#334155'
+      );
+
+      // Raised mezzanine platform slab
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy - 14,
+        TILE_WIDTH - 2,
+        TILE_HEIGHT - 1,
+        6,
+        deckTop,
+        deckLeft,
+        deckRight,
+        '#000000'
+      );
+      break;
+    }
   }
 
   ctx.restore();
@@ -2204,6 +2415,57 @@ function drawCustomVisitorAvatar(
  * including a 4-frame walking leg stride animation and a true back-view ('nw' / 'ne')
  * when walking away from the viewer!
  */
+function drawHeldDrinkCup(
+  ctx: CanvasRenderingContext2D,
+  cupX: number,
+  cupY: number,
+  drink: HeldDrinkType,
+  tick: number
+) {
+  if (!drink || drink === 'none') return;
+  ctx.save();
+  const cx = Math.round(cupX);
+  const cy = Math.round(cupY);
+
+  // 1px black pixel outline around cup
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(cx - 4, cy - 5, 8, 9);
+
+  if (drink === 'coffee') {
+    // White espresso mug + dark coffee rim + rising steam pixels
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(cx - 3, cy - 4, 6, 7);
+    ctx.fillStyle = '#78350F';
+    ctx.fillRect(cx - 3, cy - 4, 6, 2);
+    // Mug handle
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(cx + 3, cy - 3, 2, 4);
+    // Animated steam
+    const steamShift = Math.floor(tick * 0.15) % 2;
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+    ctx.fillRect(cx - 2 + steamShift, cy - 8, 2, 2);
+    ctx.fillRect(cx + 1 - steamShift, cy - 11, 2, 2);
+  } else if (drink === 'cola') {
+    // Red & white Habbo Cola cup + straw
+    ctx.fillStyle = '#DC2626';
+    ctx.fillRect(cx - 3, cy - 4, 6, 7);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(cx - 3, cy - 1, 6, 2);
+    // Straw
+    ctx.fillStyle = '#FACC15';
+    ctx.fillRect(cx, cy - 8, 2, 4);
+  } else if (drink === 'juice') {
+    // Tropical orange juice glass + straw
+    ctx.fillStyle = '#FB923C';
+    ctx.fillRect(cx - 3, cy - 4, 6, 7);
+    ctx.fillStyle = '#FEF08A';
+    ctx.fillRect(cx - 3, cy - 4, 6, 2);
+    ctx.fillStyle = '#22C55E';
+    ctx.fillRect(cx + 1, cy - 8, 2, 4);
+  }
+  ctx.restore();
+}
+
 function drawHabboAvatar(
   ctx: CanvasRenderingContext2D,
   avatarPos: { x: number; y: number },
@@ -2215,7 +2477,8 @@ function drawHabboAvatar(
   tick: number,
   avatarShadowAlpha: number,
   visitorAvatar?: VisitorAvatarProfile | null,
-  avatarAction: 'none' | 'wave' | 'dance' = 'none'
+  avatarAction: 'none' | 'wave' | 'dance' = 'none',
+  heldDrink: HeldDrinkType = 'none'
 ) {
   const { sx, sy } = gridToScreen(
     avatarPos.x,
@@ -2306,6 +2569,16 @@ function drawHabboAvatar(
       ctx.textAlign = 'center';
       ctx.fillText(activeDisplayName, Math.round(sx), ty + 9);
       ctx.restore();
+
+      if (heldDrink && heldDrink !== 'none') {
+        drawHeldDrinkCup(
+          ctx,
+          sx + (isMirrored ? 10 : -10),
+          drawY + 46,
+          heldDrink,
+          tick
+        );
+      }
       return;
     }
   }
@@ -2363,6 +2636,16 @@ function drawHabboAvatar(
       ctx.textAlign = 'center';
       ctx.fillText('o/', Math.round(sx + 19), Math.round(drawY + 21 + waveLift));
       ctx.restore();
+    }
+
+    if (heldDrink && heldDrink !== 'none') {
+      drawHeldDrinkCup(
+        ctx,
+        sx + (isMirrored ? 11 : -11),
+        drawY + 48,
+        heldDrink,
+        tick
+      );
     }
 
     // Crisp Habbo Name Tag above the character
@@ -2442,11 +2725,11 @@ function drawHabboChatBubbles(
 
   activeBubbles.forEach((bubble, idx) => {
     const ageMs = Math.max(0, now - bubble.createdAt);
-    // Smoothly rise upward from the top of the speaker's head as the message ages
-    const floatRisePx = Math.round((ageMs / 1000) * 28);
+    // Slowly rise upward from the top of the speaker's head as the message ages
+    const floatRisePx = Math.round((ageMs / 1000) * 14);
     // Older messages in the stack sit higher above newer messages
     const newerCountAfterThis = total - 1 - idx;
-    const stackLiftPx = newerCountAfterThis * 24;
+    const stackLiftPx = newerCountAfterThis * 23;
 
     const fadeStartMs = ttlMs - 900;
     const alpha =
@@ -2560,6 +2843,7 @@ export function renderIsometricRoom(params: RenderRoomParams) {
     visitorAvatar = null,
     roomSettings = DEFAULT_ROOM_SETTINGS,
     avatarAction = 'none',
+    heldDrink = 'none',
     remoteAvatars = [],
   } = params;
 
@@ -2610,6 +2894,7 @@ export function renderIsometricRoom(params: RenderRoomParams) {
       isWalking: isAvatarWalking,
       isSitting: isAvatarSitting,
       action: avatarAction,
+      heldDrink,
       visitorAvatar,
       depth: (avatarPos.x + avatarPos.y) * 100 + (isAvatarSitting ? 55 : 25),
     },
@@ -2619,6 +2904,7 @@ export function renderIsometricRoom(params: RenderRoomParams) {
       isWalking: ra.isWalking,
       isSitting: ra.isSitting,
       action: ra.action,
+      heldDrink: ra.heldDrink || ('none' as HeldDrinkType),
       visitorAvatar: ra.visitorAvatar,
       depth: (ra.pos.x + ra.pos.y) * 100 + (ra.isSitting ? 55 : 25),
     })),
@@ -2649,7 +2935,8 @@ export function renderIsometricRoom(params: RenderRoomParams) {
         tick,
         timeTheme.avatarShadowAlpha,
         av.visitorAvatar,
-        av.action
+        av.action,
+        av.heldDrink
       );
       nextAvatarIdx += 1;
     }
@@ -2680,7 +2967,8 @@ export function renderIsometricRoom(params: RenderRoomParams) {
       tick,
       timeTheme.avatarShadowAlpha,
       av.visitorAvatar,
-      av.action
+      av.action,
+      av.heldDrink
     );
     nextAvatarIdx += 1;
   }

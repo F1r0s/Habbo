@@ -121,9 +121,17 @@ const BC_CATEGORIES: Array<{
   },
   {
     id: 'tables',
-    label: 'Tables',
+    label: 'Tables, Stairs & Drinks',
     iconColor: '#D97706',
-    types: ['wood_table'],
+    types: [
+      'wood_table',
+      'dispenser_coffee',
+      'dispenser_cola',
+      'dispenser_juice',
+      'stairs_up',
+      'stairs_down',
+      'upper_floor_tile',
+    ],
   },
   {
     id: 'plants',
@@ -175,6 +183,12 @@ const HABBO_ENGLISH_NAMES: Record<RoomObjectType, string> = {
   poster_wydad_winners: 'Wydad & Winners Poster',
   gold_spotlight: 'Gold Stage Spotlight',
   habbo_candle: 'Flickering Candelabra',
+  dispenser_coffee: 'Habbo Espresso Machine',
+  dispenser_cola: 'Habbo Ice Cola Machine',
+  dispenser_juice: 'Tropical Juice Dispenser',
+  stairs_up: 'Isometric Staircase (Up)',
+  stairs_down: 'Isometric Staircase (Down)',
+  upper_floor_tile: 'Elevated Upper Floor Deck',
 };
 
 // Classic 52-color Habbo Builders' Club Palette matching reference image_b38e0cb6.png
@@ -269,6 +283,8 @@ export default function AdminDashboard() {
     clearInventoryStack,
     placeInventoryStackAtTile,
     resetInventoryToDefault,
+    customBgmUrl,
+    setCustomBgmAudio,
     updateRoomSettings,
     updateObjectVideoUrl,
     resetRoomToDefault,
@@ -1714,8 +1730,8 @@ export default function AdminDashboard() {
                       {activeGridSize * activeGridSize} tiles)
                     </span>
                   </div>
-                  <div className="grid grid-cols-4 gap-1">
-                    {[10, 12, 14, 16].map((size) => (
+                  <div className="grid grid-cols-6 gap-1">
+                    {[10, 12, 14, 16, 18, 20].map((size) => (
                       <button
                         key={size}
                         type="button"
@@ -1804,7 +1820,9 @@ export default function AdminDashboard() {
                         [
                           { id: 'oak_planks', label: 'Planks' },
                           { id: 'marble_checkers', label: 'Checkers' },
-                          { id: 'studio_tile', label: 'Grid Tile' },
+                          { id: 'studio_tile', label: 'Grid' },
+                          { id: 'cobblestone', label: 'Stone' },
+                          { id: 'cyber_glass', label: 'Neon' },
                         ] as const
                       ).map((pat) => (
                         <button
@@ -1852,6 +1870,52 @@ export default function AdminDashboard() {
                         style={{ backgroundColor: preset.color }}
                       />
                     ))}
+                  </div>
+                </div>
+
+                {/* Custom Ambient Music (.mp3/.wav) Uploader */}
+                <div className="border-t border-[#999995] pt-1.5 flex items-center justify-between gap-1">
+                  <span className="font-bold text-[#1E1E1E]">
+                    Room BGM Track:
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <label className="inline-flex items-center gap-1 rounded-[2px] border border-black bg-[#15803D] px-2 py-0.5 text-[9px] font-bold text-white hover:bg-[#16A34A] cursor-pointer">
+                      <Upload className="h-2.5 w-2.5" />
+                      <span>Upload MP3/Audio</span>
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            if (typeof reader.result === 'string') {
+                              setCustomBgmAudio(reader.result);
+                              setStatusToast(
+                                `Loaded custom BGM "${file.name}" (Auto-saved)!`
+                              );
+                            }
+                          };
+                          reader.readAsDataURL(file);
+                        }}
+                      />
+                    </label>
+                    {customBgmUrl && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCustomBgmAudio(null);
+                          setStatusToast(
+                            'Restored built-in Guitar + 808 Trap Beat BGM!'
+                          );
+                        }}
+                        className="rounded-[2px] border border-black bg-[#C93B2B] px-1.5 py-0.5 text-[9px] font-bold text-white"
+                      >
+                        Reset Beat
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -2201,15 +2265,21 @@ export default function AdminDashboard() {
                                 : '';
                             if (!dataUrl) return;
                             setPosterImageUrlInput(dataUrl);
-                            if (
+                            const targetPoster =
                               activeFloorObj &&
                               isWallPosterType(activeFloorObj.type)
-                            ) {
-                              updateObjectTransform(activeFloorObj.id, {
+                                ? activeFloorObj
+                                : objects.find(
+                                    (o) => o.type === selectedType
+                                  ) ||
+                                  objects.find((o) => isWallPosterType(o.type));
+                            if (targetPoster) {
+                              setSelectedPlacedObjectId(targetPoster.id);
+                              updateObjectTransform(targetPoster.id, {
                                 imageUrl: dataUrl,
                               });
                               setStatusToast(
-                                `Uploaded photo to ${activeFloorObj.label} (Auto-saved)!`
+                                `Uploaded exact photo to ${targetPoster.label} (Auto-saved)!`
                               );
                             } else {
                               setStatusToast(

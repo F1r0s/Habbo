@@ -14,6 +14,8 @@ import {
 } from 'lucide-react';
 import {
   RoomObject,
+  TvPlaybackSyncState,
+  computeSyncedTvElapsedSec,
   normalizeYouTubeEmbedUrl,
   clampObjectScale,
   normalizeRotationAngle,
@@ -51,6 +53,8 @@ interface IsometricYoutubeTvOverlayProps {
   originX: number;
   originY: number;
   scale: number;
+  tvSync?: TvPlaybackSyncState;
+  onSyncTvPlayback?: (patch: Partial<TvPlaybackSyncState>) => void;
   onSelectTv?: (tvObj: RoomObject) => void;
 }
 
@@ -59,6 +63,8 @@ export default function IsometricYoutubeTvOverlay({
   originX,
   originY,
   scale,
+  tvSync,
+  onSyncTvPlayback,
   onSelectTv,
 }: IsometricYoutubeTvOverlayProps) {
   const [unmutedTvIds, setUnmutedTvIds] = useState<Record<string, boolean>>({});
@@ -117,12 +123,16 @@ export default function IsometricYoutubeTvOverlay({
       currentTimeRef.current[tvId] = nextTime;
       setCurrentTimes((prev) => ({ ...prev, [tvId]: nextTime }));
       sendYouTubeCommand(tvId, 'seekTo', [nextTime, true]);
+      onSyncTvPlayback?.({
+        seekOffsetSec: nextTime,
+        isPlaying: playingTvIds[tvId] !== false,
+      });
       flashBadge(
         tvId,
         `${deltaSeconds > 0 ? `+${deltaSeconds}s` : `${deltaSeconds}s`} · ${formatSeconds(nextTime)}`
       );
     },
-    [sendYouTubeCommand, flashBadge]
+    [sendYouTubeCommand, flashBadge, onSyncTvPlayback, playingTvIds]
   );
 
   const handleSetVolume = useCallback(
@@ -167,18 +177,44 @@ export default function IsometricYoutubeTvOverlay({
   const handleTogglePlay = useCallback(
     (tvId: string) => {
       const isPlaying = playingTvIds[tvId] !== false;
+      const curSec = currentTimeRef.current[tvId] ?? 0;
       if (isPlaying) {
         setPlayingTvIds((prev) => ({ ...prev, [tvId]: false }));
         sendYouTubeCommand(tvId, 'pauseVideo', []);
+        onSyncTvPlayback?.({ isPlaying: false, seekOffsetSec: curSec });
         flashBadge(tvId, 'PAUSED');
       } else {
         setPlayingTvIds((prev) => ({ ...prev, [tvId]: true }));
         sendYouTubeCommand(tvId, 'playVideo', []);
+        onSyncTvPlayback?.({ isPlaying: true, seekOffsetSec: curSec });
         flashBadge(tvId, 'PLAYING');
       }
     },
-    [playingTvIds, sendYouTubeCommand, flashBadge]
+    [playingTvIds, sendYouTubeCommand, flashBadge, onSyncTvPlayback]
   );
+
+  // Automatically synchronize all visitors to the exact same minute & second from tvSync
+  useEffect(() => {
+    if (!tvSync) return;
+    const targetSec = computeSyncedTvElapsedSec(tvSync);
+    Object.keys(iframeRefs.current).forEach((tvId) => {
+      const localSec = currentTimeRef.current[tvId] ?? 0;
+      if (Math.abs(localSec - targetSec) > 3) {
+        currentTimeRef.current[tvId] = targetSec;
+        setCurrentTimes((prev) => ({ ...prev, [tvId]: targetSec }));
+        sendYouTubeCommand(tvId, 'seekTo', [targetSec, true]);
+      }
+      const localPlaying = playingTvIds[tvId] !== false;
+      if (tvSync.isPlaying !== localPlaying) {
+        setPlayingTvIds((prev) => ({ ...prev, [tvId]: tvSync.isPlaying }));
+        sendYouTubeCommand(
+          tvId,
+          tvSync.isPlaying ? 'playVideo' : 'pauseVideo',
+          []
+        );
+      }
+    });
+  }, [tvSync, playingTvIds, sendYouTubeCommand]);
 
   // Listen for YouTube IFrame postMessage infoDelivery events + local fallback timer
   useEffect(() => {

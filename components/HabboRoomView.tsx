@@ -51,6 +51,8 @@ import {
   normalizeYouTubeEmbedUrl,
   MIN_OBJECT_SCALE,
   MAX_OBJECT_SCALE,
+  HeldDrinkType,
+  isDrinkDispenserType,
   clampObjectScale,
   normalizeRotationAngle,
   angleToIsometricRotation,
@@ -82,6 +84,12 @@ const TIME_OVERRIDE_PRESETS: Array<{ label: string; hour: number | null }> = [
 const NOTIFICATION_AUTO_DISMISS_MS = 5200;
 
 const QUICK_PLACEABLE_TYPES: RoomObjectType[] = [
+  'dispenser_coffee',
+  'dispenser_cola',
+  'dispenser_juice',
+  'stairs_up',
+  'stairs_down',
+  'upper_floor_tile',
   'poster_raja_gb05',
   'poster_wydad_winners',
   'poster_chelsea',
@@ -152,6 +160,18 @@ const INTERACTION_FLAVOR_TEXT: Record<RoomObjectType, string> = {
     'Authentic Habbo Hotel golden stage spotlight casting a warm vertical beam.',
   habbo_candle:
     'Authentic Open-Hotel pixel candelabra with animated flickering flame.',
+  dispenser_coffee:
+    'Interactive Habbo Espresso Machine! Click to walk over and grab a hot cup of coffee.',
+  dispenser_cola:
+    'Classic red Habbo Ice Cola Machine! Click to dispense a cold fizzy Habbo Cola cup.',
+  dispenser_juice:
+    'Tropical Pixel Juice Dispenser! Click to pour a fresh tropical juice glass.',
+  stairs_up:
+    'Multi-step isometric staircase leading up to an elevated upper floor or stage.',
+  stairs_down:
+    'Recessed isometric steps leading down into a sunken lounge pit.',
+  upper_floor_tile:
+    'Raised mezzanine building floor deck with support pillars for multi-level rooms.',
 };
 
 function MiniFurniIcon({
@@ -200,13 +220,17 @@ export default function HabboRoomView() {
     chatBubbles,
     chatHistory,
     avatarAction,
+    heldDrink,
     remotePlayers,
+    tvSync,
     isAdminAuthenticated,
     isMuted,
     isMusicPlaying,
     visitorAvatar,
     useOwnerSkin,
     addObject,
+    moveObject,
+    updateObjectZ,
     rotateObject,
     updateObjectTransform,
     updateObjectVideoUrl,
@@ -214,6 +238,9 @@ export default function HabboRoomView() {
     randomizeVisitorAvatar,
     updateVisitorUsername,
     triggerAvatarAction,
+    takeDrinkFromDispenser,
+    reportLocalAvatarMotion,
+    updateTvPlaybackSync,
     toggleOwnerSkin,
     removeObject,
     removePet,
@@ -339,6 +366,7 @@ export default function HabboRoomView() {
     roomSettings,
     chatBubbles,
     avatarAction,
+    heldDrink,
     timeTheme,
     avatarPos: { x: 4, y: 5 },
     avatarFacing: 'sw' as IsometricRotation,
@@ -357,6 +385,7 @@ export default function HabboRoomView() {
         facing: IsometricRotation;
         isSitting: boolean;
         action: 'none' | 'wave' | 'dance';
+        heldDrink?: HeldDrinkType;
         visitorAvatar: VisitorAvatarProfile | null;
       }
     >,
@@ -394,6 +423,7 @@ export default function HabboRoomView() {
     simRef.current.roomSettings = roomSettings;
     simRef.current.chatBubbles = chatBubbles;
     simRef.current.avatarAction = avatarAction;
+    simRef.current.heldDrink = heldDrink;
     simRef.current.timeTheme = timeTheme;
     simRef.current.visitorAvatar = useOwnerSkin ? null : visitorAvatar;
 
@@ -429,6 +459,7 @@ export default function HabboRoomView() {
     roomSettings,
     chatBubbles,
     avatarAction,
+    heldDrink,
     timeTheme,
     visitorAvatar,
     useOwnerSkin,
@@ -521,11 +552,13 @@ export default function HabboRoomView() {
           facing: rp.facing,
           isSitting: rp.isSitting && initialPath.length === 0,
           action: rp.action,
+          heldDrink: rp.heldDrink,
           visitorAvatar: visProfile,
         };
       } else {
         existing.name = rp.name;
         existing.action = rp.action;
+        existing.heldDrink = rp.heldDrink;
         existing.visitorAvatar = visProfile;
 
         const destX = Math.round(rp.targetX);
@@ -868,9 +901,12 @@ export default function HabboRoomView() {
           isWalking: ra.pathQueue.length > 0,
           isSitting: ra.isSitting,
           action: ra.action,
+          heldDrink: ra.heldDrink,
           visitorAvatar: ra.visitorAvatar,
         };
       });
+
+      reportLocalAvatarMotion(sim.avatarPos.x, sim.avatarPos.y);
 
       const ctx = canvas.getContext('2d', { alpha: true });
       if (ctx) {
@@ -885,7 +921,7 @@ export default function HabboRoomView() {
           originY: sim.originY,
           objects: sim.objects,
           projects: sim.projects,
-          chatBubbles: sim.chatBubbles,
+          chatBubbles: [],
           avatarPos: sim.avatarPos,
           avatarFacing: sim.avatarFacing,
           isAvatarWalking: sim.pathQueue.length > 0,
@@ -901,6 +937,7 @@ export default function HabboRoomView() {
           visitorAvatar: sim.visitorAvatar,
           roomSettings: sim.roomSettings,
           avatarAction: sim.avatarAction,
+          heldDrink: sim.heldDrink,
           remoteAvatars: remoteAvatarsList,
         });
         ctx.restore();
@@ -1164,6 +1201,25 @@ export default function HabboRoomView() {
       return;
     }
 
+    // 1b. Interactive Coffee, Cola & Juice Dispensers -> Walk over and take a cup!
+    const dispenserDrink = isDrinkDispenserType(obj.type);
+    if (dispenserDrink) {
+      walkAvatarTo(obj.x, obj.y, null);
+      takeDrinkFromDispenser(dispenserDrink);
+      const drinkLabel =
+        dispenserDrink === 'coffee'
+          ? 'a hot cup of Espresso ☕'
+          : dispenserDrink === 'cola'
+            ? 'an ice-cold Habbo Cola 🥤'
+            : 'a fresh Tropical Juice 🍹';
+      pushChatBubble(
+        activeSpeakerName,
+        `*dispenses and holds ${drinkLabel}!*`,
+        'avatar'
+      );
+      return;
+    }
+
     if (obj.type === 'youtube_tv' && obj.videoUrl) {
       setRoomTvUrlDraft(obj.videoUrl);
       setRoomTvUrlFeedback(null);
@@ -1268,12 +1324,14 @@ export default function HabboRoomView() {
           className="block h-full w-full cursor-pointer"
         />
 
-        {/* Live 3D Isometric Skewed YouTube TV Screen Overlay (Exact 54x60 Window Size) */}
+        {/* Live 3D Isometric Skewed YouTube TV Screen Overlay (Synchronized across all visitors!) */}
         <IsometricYoutubeTvOverlay
           objects={objects}
           originX={viewportMetrics.originX}
           originY={viewportMetrics.originY}
           scale={viewportMetrics.scale}
+          tvSync={tvSync}
+          onSyncTvPlayback={updateTvPlaybackSync}
           onSelectTv={(tv) => {
             simRef.current.selectedObjectId = tv.id;
             setInspectedObjectState(tv);
@@ -1355,6 +1413,105 @@ export default function HabboRoomView() {
               }}
             />
           ))}
+        </div>
+
+        {/* FOREGROUND SLOW-RISING HABBO CHAT BUBBLES OVERLAY (z-40: In front of TV, Posters & Pets!) */}
+        <div
+          data-testid="habbo-foreground-chat-layer"
+          className="pointer-events-none absolute inset-0 overflow-hidden z-40"
+        >
+          <AnimatePresence>
+            {chatBubbles.slice(-6).map((bubble, idx, arr) => {
+              const newerCount = arr.length - 1 - idx;
+              let tile = bubble.speakerTile || simRef.current.avatarPos;
+              if (bubble.speakerType === 'cat') {
+                tile = { x: 3, y: 6 };
+              } else if (
+                bubble.speaker.toLowerCase() !== activeSpeakerName.toLowerCase()
+              ) {
+                const rp = remotePlayers.find(
+                  (p) => p.name.toLowerCase() === bubble.speaker.toLowerCase()
+                );
+                if (rp) {
+                  tile = { x: rp.x, y: rp.y };
+                }
+              }
+              const rawScreen = gridToScreen(
+                tile.x,
+                tile.y,
+                0.2,
+                viewportMetrics.originX,
+                viewportMetrics.originY
+              );
+              const startX = Math.max(
+                110,
+                Math.min(
+                  (simRef.current.canvasW || 1200) - 110,
+                  Math.round(rawScreen.sx * viewportMetrics.scale)
+                )
+              );
+              // Start right at the top of the character's head and rise slowly upward!
+              const headTopY = Math.round(
+                (rawScreen.sy - 78) * viewportMetrics.scale
+              );
+              const stackedY = Math.max(
+                28,
+                headTopY - newerCount * 26
+              );
+
+              return (
+                <motion.div
+                  key={bubble.id}
+                  data-testid={`foreground-chat-bubble-${bubble.id}`}
+                  initial={{ opacity: 0, y: headTopY + 6, scale: 0.95 }}
+                  animate={{
+                    opacity: 1,
+                    y: Math.max(20, stackedY - 46),
+                    scale: 1,
+                  }}
+                  exit={{ opacity: 0, y: Math.max(12, stackedY - 62) }}
+                  transition={{
+                    y: { duration: 3.9, ease: 'linear' },
+                    opacity: { duration: 0.2 },
+                  }}
+                  style={{ left: `${startX}px`, top: 0 }}
+                  className="pointer-events-none absolute -translate-x-1/2 flex items-center gap-1.5 rounded-[4px] border-2 border-black bg-white px-2.5 py-1 text-[10px] text-black shadow-[0_3px_0_#000,inset_0_-2px_0_#E4E4E4] whitespace-nowrap"
+                >
+                  <span
+                    className="inline-block h-2.5 w-2.5 rounded-full border border-black shrink-0"
+                    style={{
+                      backgroundColor:
+                        bubble.speakerType === 'cat'
+                          ? '#D97706'
+                          : bubble.speakerType === 'dragon'
+                            ? '#7C3AED'
+                            : '#16A34A',
+                    }}
+                  />
+                  <span
+                    className="font-bold text-[#000000]"
+                    style={{
+                      fontFamily: '"Volter", var(--font-pixel), monospace',
+                    }}
+                  >
+                    {bubble.speaker}:
+                  </span>
+                  <span
+                    className={
+                      bubble.isShout
+                        ? 'font-bold uppercase text-[#C93B2B]'
+                        : 'font-medium text-[#111827]'
+                    }
+                    style={{
+                      fontFamily: '"Volter", var(--font-pixel), monospace',
+                    }}
+                  >
+                    {bubble.text}
+                  </span>
+                </motion.div>
+              );
+            })}
+          </AnimatePresence>
         </div>
 
         {/* Classic In-Room Floating Habbo Pop-Up Callout right above the clicked furniture item */}
@@ -1851,6 +2008,30 @@ export default function HabboRoomView() {
                           : 'Sit Here'}
                       </span>
                     </button>
+                  ) : isDrinkDispenserType(inspectedObject.type) ? (
+                    <button
+                      type="button"
+                      data-testid="tooltip-use-item"
+                      onClick={() => {
+                        const drink = isDrinkDispenserType(
+                          inspectedObject.type
+                        )!;
+                        walkAvatarTo(
+                          inspectedObject.x,
+                          inspectedObject.y,
+                          null
+                        );
+                        takeDrinkFromDispenser(drink);
+                        pushChatBubble(
+                          activeSpeakerName,
+                          `*takes a cup of ${drink.toUpperCase()}!*`,
+                          'avatar'
+                        );
+                      }}
+                      className="inline-flex items-center gap-1 border border-black bg-[#15803D] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#16A34A]"
+                    >
+                      <span>Take Cup ☕</span>
+                    </button>
                   ) : (
                     <button
                       type="button"
@@ -1858,7 +2039,7 @@ export default function HabboRoomView() {
                       onClick={() => {
                         walkAvatarTo(inspectedObject.x, inspectedObject.y, null);
                         pushChatBubble(
-                          'Higma',
+                          activeSpeakerName,
                           `*inspects ${inspectedObject.label}*`,
                           'avatar'
                         );
@@ -1928,13 +2109,100 @@ export default function HabboRoomView() {
                 </div>
               )}
 
-              {/* Admin Real-Time Scale & Rotation Sliders inside Inspector Tooltip */}
+              {/* Full Admin Freedom Controls: Move Nudge, Elevation (Z+/Z-), Scale & Rotation right inside the room! */}
               {isAdminAuthenticated &&
                 !inspectedObject.id.startsWith('patrol-') && (
                   <div
                     data-testid="tooltip-admin-transform-sliders"
-                    className="border border-black bg-[#D9D9CE] px-2 py-1.5 space-y-1 text-[10px]"
+                    className="border border-black bg-[#D9D9CE] px-2 py-1.5 space-y-1.5 text-[10px]"
                   >
+                    <div className="flex items-center justify-between gap-1 border-b border-black/20 pb-1">
+                      <span className="font-bold text-slate-900">
+                        Move / Elevate:
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            moveObject(
+                              inspectedObject.id,
+                              Math.max(0, inspectedObject.x - 1),
+                              inspectedObject.y,
+                              'stack'
+                            )
+                          }
+                          className="rounded border border-black bg-white px-1.5 py-0.5 font-bold hover:bg-amber-100"
+                          title="Move X-1"
+                        >
+                          ←
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            moveObject(
+                              inspectedObject.id,
+                              inspectedObject.x,
+                              Math.max(0, inspectedObject.y - 1),
+                              'stack'
+                            )
+                          }
+                          className="rounded border border-black bg-white px-1.5 py-0.5 font-bold hover:bg-amber-100"
+                          title="Move Y-1"
+                        >
+                          ↑
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            moveObject(
+                              inspectedObject.id,
+                              inspectedObject.x,
+                              Math.min(
+                                (roomSettings.gridSize || 10) - 1,
+                                inspectedObject.y + 1
+                              ),
+                              'stack'
+                            )
+                          }
+                          className="rounded border border-black bg-white px-1.5 py-0.5 font-bold hover:bg-amber-100"
+                          title="Move Y+1"
+                        >
+                          ↓
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            moveObject(
+                              inspectedObject.id,
+                              Math.min(
+                                (roomSettings.gridSize || 10) - 1,
+                                inspectedObject.x + 1
+                              ),
+                              inspectedObject.y,
+                              'stack'
+                            )
+                          }
+                          className="rounded border border-black bg-white px-1.5 py-0.5 font-bold hover:bg-amber-100"
+                          title="Move X+1"
+                        >
+                          →
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateObjectZ(inspectedObject.id, -1)}
+                          className="rounded border border-black bg-[#4A4745] px-1.5 py-0.5 font-bold text-white"
+                        >
+                          Z-
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => updateObjectZ(inspectedObject.id, 1)}
+                          className="rounded border border-black bg-[#4A4745] px-1.5 py-0.5 font-bold text-white"
+                        >
+                          Z+
+                        </button>
+                      </div>
+                    </div>
                     <div className="flex items-center gap-1.5">
                       <span className="w-11 font-bold text-slate-900">
                         Scale:

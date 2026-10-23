@@ -420,11 +420,12 @@ function createAvatarWalkFrames(standingCanvas: HTMLCanvasElement): {
   };
 
   // Frame 0 = idle, Frame 1 = left stride forward, Frame 2 = passing, Frame 3 = right stride forward
+  // Uses the EXACT original pixel legs from standingCanvas so legs never change color or shape!
   const strideConfigs = [
     { leftDx: 0, leftDy: 0, rightDx: 0, rightDy: 0, bobY: 0, armSwing: 0 },
-    { leftDx: -5, leftDy: 2, rightDx: 5, rightDy: -2, bobY: -1, armSwing: 3 },
-    { leftDx: -1, leftDy: 0, rightDx: 1, rightDy: 0, bobY: 0, armSwing: 0 },
-    { leftDx: 5, leftDy: -2, rightDx: -5, rightDy: 2, bobY: -1, armSwing: -3 },
+    { leftDx: -2, leftDy: 1, rightDx: 2, rightDy: -1, bobY: -1, armSwing: 2 },
+    { leftDx: 0, leftDy: 0, rightDx: 0, rightDy: 0, bobY: 0, armSwing: 0 },
+    { leftDx: 2, leftDy: -1, rightDx: -2, rightDy: 1, bobY: -1, armSwing: -2 },
   ];
 
   const walkSW: HTMLCanvasElement[] = strideConfigs.map((cfg, frameIdx) => {
@@ -435,76 +436,53 @@ function createAvatarWalkFrames(standingCanvas: HTMLCanvasElement): {
     ctx.imageSmoothingEnabled = false;
 
     if (frameIdx === 0) {
-      // Frame 0: crisp original standing sprite centered
       ctx.drawImage(standingCanvas, 6, 2);
       return c;
     }
 
     const ox = 6;
     const oy = 2 + cfg.bobY;
+    const midX = Math.floor(standingCanvas.width / 2);
+    const legStartY = 57;
+    const legH = standingCanvas.height - legStartY;
 
-    // Draw striding isometric jeans & sneakers below the jacket (y = 56..82)
-    // Far/left leg (around x = ox + 8..16)
-    const lx = ox + 11 + cfg.leftDx;
-    const ly = oy + 56 + cfg.leftDy;
-    poly(
-      ctx,
-      [
-        [lx - 4, ly],
-        [lx + 4, ly + 1],
-        [lx + 3, ly + 17],
-        [lx - 5, ly + 16],
-      ],
-      '#334155'
-    );
-    // Left sneaker
-    poly(
-      ctx,
-      [
-        [lx - 8, ly + 17],
-        [lx + 3, ly + 17],
-        [lx + 3, ly + 21],
-        [lx - 8, ly + 21],
-      ],
-      '#E2E8F0'
+    // Slice & shift the exact original left pixel leg & shoe from standingCanvas
+    ctx.drawImage(
+      standingCanvas,
+      0,
+      legStartY,
+      midX,
+      legH,
+      ox + cfg.leftDx,
+      oy + legStartY + cfg.leftDy,
+      midX,
+      legH
     );
 
-    // Near/right leg (around x = ox + 16..24)
-    const rx = ox + 19 + cfg.rightDx;
-    const ry = oy + 57 + cfg.rightDy;
-    poly(
-      ctx,
-      [
-        [rx - 4, ry],
-        [rx + 4, ry + 1],
-        [rx + 3, ry + 17],
-        [rx - 5, ry + 16],
-      ],
-      '#475569'
-    );
-    // Right sneaker
-    poly(
-      ctx,
-      [
-        [rx - 8, ry + 17],
-        [rx + 3, ry + 17],
-        [rx + 3, ry + 21],
-        [rx - 8, ry + 21],
-      ],
-      '#FFFFFF'
+    // Slice & shift the exact original right pixel leg & shoe from standingCanvas
+    ctx.drawImage(
+      standingCanvas,
+      midX,
+      legStartY,
+      standingCanvas.width - midX,
+      legH,
+      ox + midX + cfg.rightDx,
+      oy + legStartY + cfg.rightDy,
+      standingCanvas.width - midX,
+      legH
     );
 
-    // Draw upper body (crown, head, jacket, hands: y = 0..59)
+    // Draw upper body (crown, head, jacket, hands: y = 0..58)
     ctx.drawImage(
       standingCanvas,
       0,
       0,
       standingCanvas.width,
-      59,
+      58,
       ox,
       oy,
       standingCanvas.width,
-      59
+      58
     );
 
     // Animated swinging front hand/sleeve pixel accent
@@ -530,54 +508,32 @@ function createAvatarWalkFrames(standingCanvas: HTMLCanvasElement): {
 
     const ox = 6;
     const oy = 2 + cfg.bobY;
+    const midX = Math.floor(standingCanvas.width / 2);
+    const legStartY = 57;
+    const legH = standingCanvas.height - legStartY;
 
-    // 1. Rear striding legs walking up-left (NW)
-    const lx = ox + 11 + cfg.leftDx;
-    const ly = oy + 56 + cfg.leftDy;
-    poly(
-      ctx,
-      [
-        [lx - 4, ly],
-        [lx + 4, ly + 1],
-        [lx + 3, ly + 17],
-        [lx - 5, ly + 16],
-      ],
-      '#1E293B'
+    // 1. Rear striding legs using the exact original pixel legs & shoes from standingCanvas
+    ctx.drawImage(
+      standingCanvas,
+      0,
+      legStartY,
+      midX,
+      legH,
+      ox + cfg.leftDx,
+      oy + legStartY + cfg.leftDy,
+      midX,
+      legH
     );
-    // Rear heel of left shoe
-    poly(
-      ctx,
-      [
-        [lx - 5, ly + 16],
-        [lx + 4, ly + 17],
-        [lx + 4, ly + 21],
-        [lx - 5, ly + 20],
-      ],
-      '#CBD5E1'
-    );
-
-    const rx = ox + 19 + cfg.rightDx;
-    const ry = oy + 57 + cfg.rightDy;
-    poly(
-      ctx,
-      [
-        [rx - 4, ry],
-        [rx + 4, ry + 1],
-        [rx + 3, ry + 17],
-        [rx - 5, ry + 16],
-      ],
-      '#334155'
-    );
-    // Rear heel of right shoe
-    poly(
-      ctx,
-      [
-        [rx - 5, ry + 16],
-        [rx + 4, ry + 17],
-        [rx + 4, ry + 21],
-        [rx - 5, ry + 20],
-      ],
-      '#E2E8F0'
+    ctx.drawImage(
+      standingCanvas,
+      midX,
+      legStartY,
+      standingCanvas.width - midX,
+      legH,
+      ox + midX + cfg.rightDx,
+      oy + legStartY + cfg.rightDy,
+      standingCanvas.width - midX,
+      legH
     );
 
     // 2. Draw base upper body silhouette (y = 0..58) for the crown & head outline
@@ -677,73 +633,32 @@ function createSeatedAvatarSprite(
   };
 
   if (!backView) {
-    // Front-left ('sw') seated legs
-    poly(
-      [
-        [20, 56],
-        [28, 60],
-        [16, 66],
-        [8, 62],
-      ],
-      '#334155'
+    // Front-left ('sw') seated pose using the EXACT original pixel legs & shoes from standingCanvas!
+    const legStartY = 57;
+    const legH = standingCanvas.height - legStartY;
+    // Draw the original pixel legs shifted forward-left for the seated posture
+    ctx.drawImage(
+      standingCanvas,
+      0,
+      legStartY,
+      standingCanvas.width,
+      legH,
+      8,
+      54,
+      standingCanvas.width,
+      legH - 2
     );
-    poly(
-      [
-        [8, 62],
-        [15, 65],
-        [15, 75],
-        [8, 72],
-      ],
-      '#1E293B'
-    );
-    poly(
-      [
-        [4, 73],
-        [15, 75],
-        [15, 79],
-        [4, 77],
-      ],
-      '#E2E8F0'
-    );
-
-    poly(
-      [
-        [25, 58],
-        [34, 62],
-        [22, 68],
-        [14, 64],
-      ],
-      '#475569'
-    );
-    poly(
-      [
-        [14, 64],
-        [22, 68],
-        [22, 78],
-        [14, 74],
-      ],
-      '#334155'
-    );
-    poly(
-      [
-        [10, 76],
-        [22, 78],
-        [22, 82],
-        [10, 80],
-      ],
-      '#FFFFFF'
-    );
-
+    // Draw the upper body on top
     ctx.drawImage(
       standingCanvas,
       0,
       0,
       standingCanvas.width,
-      61,
+      59,
       11,
       0,
       standingCanvas.width,
-      61
+      59
     );
   } else {
     // Back-left ('nw') seated view (we see the back of Higma's head & jacket above the sofa backrest)
@@ -1010,7 +925,8 @@ export function getOrCreateVisitorHabboSprites(profile: {
     return visitorSpriteCache[cacheKey];
   }
 
-  const keepCrown = profile.accessory === 'crown';
+  // Never put hats/crowns on visitors so their head & hair look clean
+  const keepCrown = false;
   const walkSW = atlas.higmaWalkSW.map((frame) =>
     recolorHabboAvatarCanvas(
       frame,

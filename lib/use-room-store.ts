@@ -18,12 +18,16 @@ import {
   PlacementMode,
   InventoryItem,
   InventoryStackLayer,
-  RoomSettings,
-  RoomPlayerPresence,
-  sanitizeRoomSettings,
-  isWallPosterType,
-  pruneStalePlayers,
-  getNextStackHeightAtTile,
+    RoomSettings,
+    HeldDrinkType,
+    RoomPlayerPresence,
+    TvPlaybackSyncState,
+    DEFAULT_YOUTUBE_VIDEO_URL,
+    sanitizeRoomSettings,
+    pruneStalePlayers,
+    isWallPosterType,
+    isDrinkDispenserType,
+    getNextStackHeightAtTile,
   filterActiveChatBubbles,
   applyTilePlacement,
   moveRoomObjectToTile,
@@ -43,12 +47,13 @@ import {
   rotationToAngle,
 } from './room-engine';
 
-const STORAGE_KEY_OBJECTS = 'habbofolio_room_objects_v6';
+const STORAGE_KEY_OBJECTS = 'habbofolio_room_objects_v7';
 const STORAGE_KEY_PROJECTS = 'habbofolio_project_links_v2';
 const STORAGE_KEY_PETS = 'habbofolio_room_pets_v1';
-const STORAGE_KEY_INVENTORY = 'habbofolio_inventory_items_v3';
+const STORAGE_KEY_INVENTORY = 'habbofolio_inventory_items_v4';
 const STORAGE_KEY_INVENTORY_STACK = 'habbofolio_inventory_stack_v1';
 const STORAGE_KEY_ROOM_SETTINGS = 'habbofolio_room_settings_v1';
+const STORAGE_KEY_CUSTOM_BGM = 'habbofolio_custom_bgm_v1';
 const STORAGE_KEY_ADMIN_AUTH = 'habbofolio_admin_auth_v1';
 const STORAGE_KEY_VISITOR_AVATAR = 'habbofolio_visitor_avatar_v1';
 
@@ -57,10 +62,24 @@ class PixelAudioEngine {
   private ctx: AudioContext | null = null;
   private musicTimer: number | null = null;
   private stepIdx: number = 0;
+  private customBgmUrl: string | null = null;
+  private customBgmAudio: HTMLAudioElement | null = null;
   public muted: boolean = false;
   public musicPlaying: boolean = false;
 
   private audioCache: Record<string, HTMLAudioElement> = {};
+
+  setCustomBgmUrl(url: string | null) {
+    this.customBgmUrl = url;
+    if (this.customBgmAudio) {
+      this.customBgmAudio.pause();
+      this.customBgmAudio = null;
+    }
+    if (this.musicPlaying && !this.muted) {
+      this.stopAmbientMusic();
+      this.startAmbientMusic();
+    }
+  }
 
   private getCtx(): AudioContext | null {
     if (this.muted || typeof window === 'undefined') return null;
@@ -104,18 +123,34 @@ class PixelAudioEngine {
   startAmbientMusic() {
     if (typeof window === 'undefined') return;
     this.musicPlaying = true;
+
+    // If Admin uploaded a custom audio track (.mp3/.wav), play that directly in a loop!
+    if (this.customBgmUrl) {
+      try {
+        if (!this.customBgmAudio) {
+          this.customBgmAudio = new Audio(this.customBgmUrl);
+          this.customBgmAudio.loop = true;
+          this.customBgmAudio.volume = 0.45;
+        }
+        this.customBgmAudio.play().catch(() => {});
+        return;
+      } catch {
+        // Fallback to synth beat if custom audio fails
+      }
+    }
+
     if (this.musicTimer !== null) return;
 
-    // Warm Habbo Hotel Lounge Bossa-Chiptune chord & marimba progression
+    // Chill Melancholic Fingerpicked Guitar Arpeggio + Deep 808 Trap Beat (inspired by uploaded instrumental)
     const progression = [
-      // Fmaj7
-      { bass: 174.61, chord: [261.63, 329.63, 440.0], arp: [523.25, 659.25, 587.33, 440.0] },
-      // Em7
-      { bass: 164.81, chord: [246.94, 293.66, 392.0], arp: [493.88, 587.33, 523.25, 392.0] },
-      // Dm7
-      { bass: 146.83, chord: [220.0, 261.63, 349.23], arp: [440.0, 523.25, 493.88, 349.23] },
-      // G13 -> Cmaj9
-      { bass: 130.81, chord: [246.94, 329.63, 392.0], arp: [392.0, 493.88, 587.33, 659.25] },
+      // Cm9
+      { sub808: 65.41, guitarArp: [261.63, 311.13, 392.0, 466.16, 587.33, 466.16, 392.0, 311.13] },
+      // Abmaj7
+      { sub808: 51.91, guitarArp: [207.65, 261.63, 311.13, 392.0, 523.25, 392.0, 311.13, 261.63] },
+      // Fm9
+      { sub808: 43.65, guitarArp: [174.61, 207.65, 261.63, 311.13, 392.0, 311.13, 261.63, 207.65] },
+      // G7sus4 -> G7b9
+      { sub808: 49.0, guitarArp: [196.0, 246.94, 293.66, 349.23, 415.3, 349.23, 293.66, 246.94] },
     ];
 
     const playTick = () => {
@@ -125,63 +160,91 @@ class PixelAudioEngine {
 
       const now = ctx.currentTime;
       const bar = Math.floor(this.stepIdx / 8) % progression.length;
-      const beat = this.stepIdx % 8;
+      const step = this.stepIdx % 8;
+      const cycleBar = Math.floor(this.stepIdx / 8);
       const harmony = progression[bar];
+      // First 2 bars are pure acoustic/electric guitar intro, then 808 + trap drums drop in!
+      const drumsActive = cycleBar >= 2;
 
-      // 1. Warm sub-bass lounge pulse on beats 0, 3, 6 (Bossa nova clave feel)
-      if (beat === 0 || beat === 3 || beat === 6) {
-        const bassOsc = ctx.createOscillator();
-        const bassGain = ctx.createGain();
-        bassOsc.type = 'sine';
-        bassOsc.frequency.setValueAtTime(harmony.bass, now);
-        bassGain.gain.setValueAtTime(0.035, now);
-        bassGain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
-        bassOsc.connect(bassGain);
-        bassGain.connect(ctx.destination);
-        bassOsc.start(now);
-        bassOsc.stop(now + 0.4);
-      }
+      // 1. Plucked Melancholic Guitar Arpeggio on every step
+      const gFreq = harmony.guitarArp[step % harmony.guitarArp.length];
+      const gOsc = ctx.createOscillator();
+      const gOsc2 = ctx.createOscillator();
+      const gGain = ctx.createGain();
+      gOsc.type = 'triangle';
+      gOsc2.type = 'sine';
+      gOsc.frequency.setValueAtTime(gFreq, now);
+      gOsc2.frequency.setValueAtTime(gFreq * 2, now);
+      gGain.gain.setValueAtTime(0.028, now);
+      gGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.42);
+      gOsc.connect(gGain);
+      gOsc2.connect(gGain);
+      gGain.connect(ctx.destination);
+      gOsc.start(now);
+      gOsc2.start(now);
+      gOsc.stop(now + 0.44);
+      gOsc2.stop(now + 0.44);
 
-      // 2. Soft electric-piano pad chord on beat 0 and 4
-      if (beat === 0 || beat === 4) {
-        for (const freq of harmony.chord) {
-          const padOsc = ctx.createOscillator();
-          const padGain = ctx.createGain();
-          padOsc.type = 'triangle';
-          padOsc.frequency.setValueAtTime(freq, now);
-          padGain.gain.setValueAtTime(0.012, now);
-          padGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.75);
-          padOsc.connect(padGain);
-          padGain.connect(ctx.destination);
-          padOsc.start(now);
-          padOsc.stop(now + 0.78);
+      if (drumsActive) {
+        // 2. Deep 808 Sub-Bass + Kick Punch on steps 0, 3, 6
+        if (step === 0 || step === 3 || step === 6) {
+          const kickOsc = ctx.createOscillator();
+          const kickGain = ctx.createGain();
+          kickOsc.type = 'sine';
+          kickOsc.frequency.setValueAtTime(120, now);
+          kickOsc.frequency.exponentialRampToValueAtTime(harmony.sub808, now + 0.065);
+          kickGain.gain.setValueAtTime(0.065, now);
+          kickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
+          kickOsc.connect(kickGain);
+          kickGain.connect(ctx.destination);
+          kickOsc.start(now);
+          kickOsc.stop(now + 0.47);
         }
-      }
 
-      // 3. Gentle pixel marimba melody notes
-      if (beat % 2 === 1) {
-        const noteFreq = harmony.arp[Math.floor(beat / 2) % harmony.arp.length];
-        const marOsc = ctx.createOscillator();
-        const marGain = ctx.createGain();
-        marOsc.type = 'sine';
-        marOsc.frequency.setValueAtTime(noteFreq, now);
-        marGain.gain.setValueAtTime(0.018, now);
-        marGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.22);
-        marOsc.connect(marGain);
-        marGain.connect(ctx.destination);
-        marOsc.start(now);
-        marOsc.stop(now + 0.24);
+        // 3. Crisp Trap Snare / Clap on backbeats (steps 2 and 6)
+        if (step === 2 || step === 6) {
+          const snOsc = ctx.createOscillator();
+          const snGain = ctx.createGain();
+          snOsc.type = 'triangle';
+          snOsc.frequency.setValueAtTime(210, now);
+          snOsc.frequency.exponentialRampToValueAtTime(110, now + 0.07);
+          snGain.gain.setValueAtTime(0.032, now);
+          snGain.gain.exponentialRampToValueAtTime(0.001, now + 0.09);
+          snOsc.connect(snGain);
+          snGain.connect(ctx.destination);
+          snOsc.start(now);
+          snOsc.stop(now + 0.1);
+        }
+
+        // 4. Metallic Hi-Hat Ticks + Double-Time Trap Roll on step 7
+        const hatCount = step === 7 ? 3 : 1;
+        for (let h = 0; h < hatCount; h++) {
+          const hTime = now + h * 0.07;
+          const hatOsc = ctx.createOscillator();
+          const hatGain = ctx.createGain();
+          hatOsc.type = 'square';
+          hatOsc.frequency.setValueAtTime(6400 + h * 600, hTime);
+          hatGain.gain.setValueAtTime(0.006, hTime);
+          hatGain.gain.exponentialRampToValueAtTime(0.0005, hTime + 0.03);
+          hatOsc.connect(hatGain);
+          hatGain.connect(ctx.destination);
+          hatOsc.start(hTime);
+          hatOsc.stop(hTime + 0.035);
+        }
       }
 
       this.stepIdx += 1;
     };
 
     playTick();
-    this.musicTimer = window.setInterval(playTick, 360);
+    this.musicTimer = window.setInterval(playTick, 230);
   }
 
   stopAmbientMusic() {
     this.musicPlaying = false;
+    if (this.customBgmAudio) {
+      this.customBgmAudio.pause();
+    }
     if (this.musicTimer !== null) {
       clearInterval(this.musicTimer);
       this.musicTimer = null;
@@ -305,10 +368,19 @@ export function useRoomStore() {
   );
   const [chatBubbles, setChatBubbles] = useState<ChatBubble[]>([]);
   const [chatHistory, setChatHistory] = useState<ChatBubble[]>([]);
-  const [avatarAction, setAvatarAction] = useState<'none' | 'wave' | 'dance'>(
-    'none'
-  );
-  const [remotePlayers, setRemotePlayers] = useState<RoomPlayerPresence[]>([]);
+    const [avatarAction, setAvatarAction] = useState<'none' | 'wave' | 'dance'>(
+      'none'
+    );
+    const [heldDrink, setHeldDrink] = useState<HeldDrinkType>('none');
+    const [remotePlayers, setRemotePlayers] = useState<RoomPlayerPresence[]>([]);
+    const [tvSync, setTvSync] = useState<TvPlaybackSyncState>({
+      videoUrl: DEFAULT_YOUTUBE_VIDEO_URL,
+      isPlaying: true,
+      seekOffsetSec: 0,
+      startedAtServerMs: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const [customBgmUrl, setCustomBgmUrlState] = useState<string | null>(null);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -322,6 +394,23 @@ export function useRoomStore() {
   const lastLocalMutationRef = useRef<number>(0);
   const syncPostTimerRef = useRef<number | null>(null);
   const seenChatIdsRef = useRef<Set<string>>(new Set());
+  const localPresenceRef = useRef<{
+    x: number;
+    y: number;
+    targetX: number;
+    targetY: number;
+    facing: IsometricRotation;
+    isWalking: boolean;
+    isSitting: boolean;
+  }>({
+    x: 4,
+    y: 5,
+    targetX: 4,
+    targetY: 5,
+    facing: 'sw',
+    isWalking: false,
+    isSitting: false,
+  });
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const localCoordsRef = useRef<{
     x: number;
@@ -391,6 +480,11 @@ export function useRoomStore() {
       if (savedSettings !== null) {
         const parsedSettings = JSON.parse(savedSettings);
         setRoomSettings(sanitizeRoomSettings(parsedSettings));
+      }
+      const savedBgm = window.localStorage.getItem(STORAGE_KEY_CUSTOM_BGM);
+      if (savedBgm) {
+        setCustomBgmUrlState(savedBgm);
+        pixelAudio.setCustomBgmUrl(savedBgm);
       }
       if (savedAuth === 'true') {
         setIsAdminAuthenticated(true);
@@ -520,11 +614,12 @@ export function useRoomStore() {
         facing: overrides?.facing ?? c.facing,
         isSitting: overrides?.isSitting ?? c.isSitting,
         action: overrides?.action ?? avatarAction,
+        heldDrink,
         avatar: effAvatar,
         lastSeenAt: Date.now(),
       };
     },
-    [visitorAvatar, useOwnerSkin, avatarAction]
+    [visitorAvatar, useOwnerSkin, avatarAction, heldDrink]
   );
 
   // Instant 0ms multi-tab BroadcastChannel + beforeunload disconnect beacon
@@ -616,7 +711,9 @@ export function useRoomStore() {
               )
             );
           }
-
+          if (data.tvSync) {
+            setTvSync(data.tvSync);
+          }
           if (Array.isArray(data.chatLog)) {
             data.chatLog.forEach((remoteBubble: ChatBubble) => {
               if (
@@ -627,9 +724,9 @@ export function useRoomStore() {
               }
               seenChatIdsRef.current.add(remoteBubble.id);
               if (Date.now() - remoteBubble.createdAt < 12000) {
-                pixelAudio.playChatPop(false);
+                pixelAudio.playChatPop(true);
                 setChatBubbles((prev) => [
-                  ...prev.slice(-4),
+                  ...prev.slice(-5),
                   { ...remoteBubble, createdAt: Date.now() },
                 ]);
                 setChatHistory((prev) => [...prev.slice(-30), remoteBubble]);
@@ -1068,6 +1165,77 @@ export function useRoomStore() {
     },
     [buildLocalPresence]
   );
+
+  const takeDrinkFromDispenser = useCallback(
+    (drink: HeldDrinkType) => {
+      setHeldDrink(drink);
+      const presence = {
+        ...buildLocalPresence(),
+        heldDrink: drink,
+      };
+      try {
+        broadcastChannelRef.current?.postMessage({
+          type: 'presence',
+          player: presence,
+        });
+      } catch {}
+      fetch('/api/room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerPresence: presence }),
+      }).catch(() => {});
+      pixelAudio.playPlaceObject();
+    },
+    [buildLocalPresence]
+  );
+
+  const reportLocalAvatarMotion = useCallback(
+    (x: number, y: number) => {
+      localPresenceRef.current.x = x;
+      localPresenceRef.current.y = y;
+      localCoordsRef.current.x = x;
+      localCoordsRef.current.y = y;
+    },
+    []
+  );
+
+  const updateTvPlaybackSync = useCallback(
+    (patch: Partial<TvPlaybackSyncState>) => {
+      setTvSync((prev) => {
+        const next: TvPlaybackSyncState = {
+          ...prev,
+          ...patch,
+          startedAtServerMs: Date.now(),
+          updatedAt: Date.now(),
+        };
+        try {
+          broadcastChannelRef.current?.postMessage({
+            type: 'tvSync',
+            tvSync: next,
+          });
+        } catch {}
+        fetch('/api/room', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tvSync: next }),
+        }).catch(() => {});
+        return next;
+      });
+    },
+    []
+  );
+
+  const setCustomBgmAudio = useCallback((url: string | null) => {
+    setCustomBgmUrlState(url);
+    pixelAudio.setCustomBgmUrl(url);
+    try {
+      if (url) {
+        window.localStorage.setItem(STORAGE_KEY_CUSTOM_BGM, url);
+      } else {
+        window.localStorage.removeItem(STORAGE_KEY_CUSTOM_BGM);
+      }
+    } catch {}
+  }, []);
 
   const moveObject = useCallback(
     (
@@ -1524,49 +1692,57 @@ export function useRoomStore() {
   }, [projects, persistState]);
 
   const pushChatBubble = useCallback(
-    (
-      speaker: string,
-      text: string,
-      speakerType: ChatBubble['speakerType'] = 'avatar',
-      isShout: boolean = false
-    ) => {
-      const trimmed = text.trim();
-      if (!trimmed) return;
-      pixelAudio.playChatPop(speakerType === 'cat' || speakerType === 'dragon');
-      const newBubble: ChatBubble = {
-        id: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-        speaker,
-        speakerType,
-        text: trimmed,
-        isShout,
-        offsetY: 4,
-        createdAt: Date.now(),
-      };
-      seenChatIdsRef.current.add(newBubble.id);
-      setChatBubbles((prev) => {
-        const shifted = prev
-          .map((b) => ({ ...b, offsetY: b.offsetY + 28 }))
-          .filter((b) => b.offsetY < 200);
-        return [...shifted, newBubble];
-      });
-      setChatHistory((prev) => [...prev.slice(-30), newBubble]);
+      (
+        speaker: string,
+        text: string,
+        speakerType: ChatBubble['speakerType'] = 'avatar',
+        isShout: boolean = false,
+        customTile?: { x: number; y: number }
+      ) => {
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        pixelAudio.playChatPop(speakerType === 'cat' || speakerType === 'dragon');
+        const newBubble: ChatBubble = {
+          id: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+          speaker,
+          speakerId: speakerType === 'avatar' ? visitorAvatar.id : undefined,
+          speakerTile:
+            customTile ||
+            (speakerType === 'avatar'
+              ? {
+                  x: Math.round(localPresenceRef.current.x),
+                  y: Math.round(localPresenceRef.current.y),
+                }
+              : undefined),
+          speakerType,
+          text: trimmed,
+          isShout,
+          offsetY: 0,
+          createdAt: Date.now(),
+        };
+        seenChatIdsRef.current.add(newBubble.id);
+        setChatBubbles((prev) => {
+          const shifted = prev
+            .map((b) => ({ ...b, offsetY: b.offsetY + 24 }))
+            .filter((b) => b.offsetY < 220);
+          return [...shifted, newBubble];
+        });
+        setChatHistory((prev) => [...prev.slice(-30), newBubble]);
 
-      if (speakerType === 'avatar') {
-        try {
+        if (speakerType === 'avatar') {
           broadcastChannelRef.current?.postMessage({
             type: 'chat',
             bubble: newBubble,
           });
-        } catch {}
-        fetch('/api/room', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ chatBubble: newBubble }),
-        }).catch(() => {});
-      }
-    },
-    []
-  );
+          fetch('/api/room', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chatBubble: newBubble }),
+          }).catch(() => {});
+        }
+      },
+      [visitorAvatar.id]
+    );
 
   const loginAdmin = useCallback(() => {
     setIsAdminAuthenticated(true);
@@ -1624,10 +1800,13 @@ export function useRoomStore() {
     inventory,
     inventoryStack,
     roomSettings,
-    chatBubbles,
-    chatHistory,
-    avatarAction,
-    remotePlayers,
+        chatBubbles,
+        chatHistory,
+        avatarAction,
+        heldDrink,
+        remotePlayers,
+        tvSync,
+    customBgmUrl,
     isLoaded,
     isAdminAuthenticated,
     isMuted,
@@ -1662,6 +1841,10 @@ export function useRoomStore() {
     randomizeVisitorAvatar,
     updateVisitorUsername,
     triggerAvatarAction,
+    takeDrinkFromDispenser,
+    reportLocalAvatarMotion,
+    updateTvPlaybackSync,
+    setCustomBgmAudio,
     updateRoomSettings,
     toggleOwnerSkin,
     addProjectLink,

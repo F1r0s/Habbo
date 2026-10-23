@@ -18,10 +18,35 @@ export type RoomObjectType =
   | 'potted_plant'
   | 'youtube_tv'
   | 'poster_chelsea'
-  | 'poster_raja_gb05'
-  | 'poster_wydad_winners'
-  | 'gold_spotlight'
-  | 'habbo_candle';
+    | 'poster_raja_gb05'
+    | 'poster_wydad_winners'
+    | 'gold_spotlight'
+    | 'habbo_candle'
+    | 'dispenser_coffee'
+    | 'dispenser_cola'
+    | 'dispenser_juice'
+    | 'stairs_up'
+    | 'stairs_down'
+    | 'upper_floor_tile';
+
+  export type HeldDrinkType = 'none' | 'coffee' | 'cola' | 'juice';
+
+  export function isDrinkDispenserType(
+    type: RoomObjectType
+  ): 'coffee' | 'cola' | 'juice' | null {
+    if (type === 'dispenser_coffee') return 'coffee';
+    if (type === 'dispenser_cola') return 'cola';
+    if (type === 'dispenser_juice') return 'juice';
+    return null;
+  }
+
+  export function isStaircaseOrPlatformType(type: RoomObjectType): boolean {
+  return (
+    type === 'stairs_up' ||
+    type === 'stairs_down' ||
+    type === 'upper_floor_tile'
+  );
+}
 
 export type ObjectCategory =
   | 'console'
@@ -55,8 +80,8 @@ export type IsometricRotation = 'se' | 'sw' | 'nw' | 'ne';
 
 export const ROTATION_ORDER: IsometricRotation[] = ['se', 'sw', 'nw', 'ne'];
 
-export const MIN_OBJECT_SCALE = 0.4;
-export const MAX_OBJECT_SCALE = 2.5;
+export const MIN_OBJECT_SCALE = 0.35;
+export const MAX_OBJECT_SCALE = 3.0;
 export const DEFAULT_OBJECT_SCALE = 1;
 
 export function clampObjectScale(scale?: number): number {
@@ -128,11 +153,52 @@ export interface RoomObject {
 export interface ChatBubble {
   id: string;
   speaker: string;
+  speakerId?: string;
+  speakerTile?: { x: number; y: number };
   speakerType: 'cat' | 'dragon' | 'avatar' | 'system';
   text: string;
   isShout?: boolean;
   offsetY: number; // rising float offset in pixels
   createdAt: number;
+}
+
+export interface RoomPlayerPresence {
+  id: string;
+  name: string;
+  isOwner: boolean;
+  x: number;
+  y: number;
+  targetX: number;
+  targetY: number;
+  facing: IsometricRotation;
+  isWalking?: boolean;
+  isSitting: boolean;
+  action: 'none' | 'wave' | 'dance';
+  heldDrink?: HeldDrinkType;
+  avatar: VisitorAvatarProfile;
+  lastSeenAt: number;
+}
+
+export interface TvPlaybackSyncState {
+  videoUrl: string;
+  isPlaying: boolean;
+  seekOffsetSec: number;
+  startedAtServerMs: number;
+  updatedAt: number;
+}
+
+export function computeSyncedTvElapsedSec(
+  tvState: TvPlaybackSyncState,
+  nowMs: number = Date.now()
+): number {
+  if (!tvState.isPlaying) {
+    return Math.max(0, Math.floor(tvState.seekOffsetSec));
+  }
+  const elapsedSinceStart = Math.max(
+    0,
+    (nowMs - tvState.startedAtServerMs) / 1000
+  );
+  return Math.max(0, Math.floor(tvState.seekOffsetSec + elapsedSinceStart));
 }
 
 export type WallPatternType =
@@ -147,7 +213,10 @@ export type FloorPatternType =
   | 'marble_checkers'
   | 'parquet'
   | 'red_carpet'
-  | 'studio_tile';
+  | 'studio_tile'
+  | 'cobblestone'
+  | 'emerald_turf'
+  | 'cyber_glass';
 
 export interface RoomSettings {
   roomTitle: string;
@@ -180,10 +249,10 @@ export function sanitizeRoomSettings(
     return { ...DEFAULT_ROOM_SETTINGS };
   }
   const rawGrid =
-    typeof input.gridSize === 'number' && !Number.isNaN(input.gridSize)
-      ? Math.round(input.gridSize)
-      : DEFAULT_ROOM_SETTINGS.gridSize;
-  const clampedGrid = Math.max(8, Math.min(16, rawGrid));
+      typeof input.gridSize === 'number' && !Number.isNaN(input.gridSize)
+        ? Math.round(input.gridSize)
+        : DEFAULT_ROOM_SETTINGS.gridSize;
+    const clampedGrid = Math.max(8, Math.min(20, rawGrid));
 
   const rawWallH =
     typeof input.wallHeight === 'number' && !Number.isNaN(input.wallHeight)
@@ -211,6 +280,9 @@ export function sanitizeRoomSettings(
     'parquet',
     'red_carpet',
     'studio_tile',
+    'cobblestone',
+    'emerald_turf',
+    'cyber_glass',
   ];
 
   return {
@@ -482,16 +554,76 @@ export const OBJECT_CATALOG: Record<
     defaultColor: '#facc15',
   },
   habbo_candle: {
-    type: 'habbo_candle',
-    name: 'Habbo Flickering Candelabra',
-    category: 'bottles_blocks',
-    defaultWalkable: false,
-    stackHeight: 1,
-    description:
-      'Authentic Open-Hotel pixel candle with animated flickering flame.',
-    defaultColor: '#fb923c',
-  },
-};
+      type: 'habbo_candle',
+      name: 'Habbo Flickering Candelabra',
+      category: 'bottles_blocks',
+      defaultWalkable: false,
+      stackHeight: 1,
+      description:
+        'Authentic Open-Hotel pixel candle with animated flickering flame.',
+      defaultColor: '#fb923c',
+    },
+    dispenser_coffee: {
+      type: 'dispenser_coffee',
+      name: 'Habbo Espresso & Coffee Machine',
+      category: 'furniture',
+      defaultWalkable: false,
+      stackHeight: 2,
+      description:
+        'Interactive Habbo coffee dispenser! Click to walk over and grab a hot cup of espresso.',
+      defaultColor: '#78350f',
+    },
+    dispenser_cola: {
+      type: 'dispenser_cola',
+      name: 'Habbo Ice Cola Machine',
+      category: 'furniture',
+      defaultWalkable: false,
+      stackHeight: 2,
+      description:
+        'Classic red Habbo Cola vending machine! Click to dispense a cold fizzy Habbo Cola cup.',
+      defaultColor: '#dc2626',
+    },
+    dispenser_juice: {
+      type: 'dispenser_juice',
+      name: 'Tropical Pixel Juice Dispenser',
+      category: 'furniture',
+      defaultWalkable: false,
+      stackHeight: 2,
+      description:
+        ' illuminated fruit juice machine! Click to pour a fresh tropical juice glass.',
+      defaultColor: '#f97316',
+    },
+    stairs_up: {
+      type: 'stairs_up',
+      name: 'Isometric Staircase (Up)',
+      category: 'furniture',
+      defaultWalkable: true,
+      stackHeight: 2,
+      description:
+        ' multi-step isometric staircase leading up to an elevated upper floor or VIP stage.',
+      defaultColor: '#d97706',
+    },
+    stairs_down: {
+      type: 'stairs_down',
+      name: 'Isometric Staircase (Down)',
+      category: 'furniture',
+      defaultWalkable: true,
+      stackHeight: 1,
+      description:
+        'Recessed isometric steps leading down into a sunken lounge pit or lower floor.',
+      defaultColor: '#92400e',
+    },
+    upper_floor_tile: {
+      type: 'upper_floor_tile',
+      name: 'Elevated Upper Floor Deck',
+      category: 'furniture',
+      defaultWalkable: true,
+      stackHeight: 1,
+      description:
+        'Raised mezzanine building floor tile with chrome railing trim for multi-level rooms.',
+      defaultColor: '#cbd5e1',
+    },
+  };
 
 export const DEFAULT_POSTER_IMAGES: Record<
   'poster_chelsea' | 'poster_raja_gb05' | 'poster_wydad_winners',
@@ -697,21 +829,6 @@ export interface VisitorAvatarProfile {
   shoeColor: string;
   accessory: 'none' | 'cap' | 'visor' | 'headphones' | 'crown';
   createdAt: string;
-}
-
-export interface RoomPlayerPresence {
-  id: string;
-  name: string;
-  isOwner: boolean;
-  x: number;
-  y: number;
-  targetX: number;
-  targetY: number;
-  facing: IsometricRotation;
-  isSitting: boolean;
-  action: 'none' | 'wave' | 'dance';
-  avatar: VisitorAvatarProfile;
-  lastSeenAt: number;
 }
 
 export function pruneStalePlayers(
@@ -1331,23 +1448,67 @@ export const DEFAULT_ROOM_OBJECTS: RoomObject[] = [
     createdAt: '2026-10-20T09:46:00Z',
   },
   {
-    id: 'obj-poster-chelsea-1',
-    type: 'poster_chelsea',
-    label: 'Chelsea FC #20 Wall Poster',
-    x: 0,
-    y: 5,
-    z: 0,
-    rotation: 'sw',
-    rotationAngle: 90,
-    scale: 1.25,
-    colorVariant: '#1d4ed8',
-    walkable: true,
-    imageUrl: DEFAULT_POSTER_IMAGES.poster_chelsea,
-    customNote:
-      'Chelsea FC #20 player portrait wall poster mounted on the left brick wall.',
-    createdAt: '2026-10-20T09:47:00Z',
-  },
-];
+      id: 'obj-poster-chelsea-1',
+      type: 'poster_chelsea',
+      label: 'Chelsea FC #20 Wall Poster',
+      x: 0,
+      y: 5,
+      z: 0,
+      rotation: 'sw',
+      rotationAngle: 90,
+      scale: 1.25,
+      colorVariant: '#1d4ed8',
+      walkable: true,
+      imageUrl: DEFAULT_POSTER_IMAGES.poster_chelsea,
+      customNote:
+        'Chelsea FC #20 player portrait wall poster mounted on the left brick wall.',
+      createdAt: '2026-10-20T09:47:00Z',
+    },
+
+    // 10. Interactive Drink Dispensers (Coffee & Habbo Cola)
+    {
+      id: 'obj-dispenser-coffee-1',
+      type: 'dispenser_coffee',
+      label: 'Habbo Espresso Machine',
+      x: 1,
+      y: 2,
+      z: 0,
+      rotation: 'se',
+      rotationAngle: 0,
+      scale: 1,
+      colorVariant: '#78350f',
+      walkable: false,
+      createdAt: '2026-10-20T09:48:00Z',
+    },
+    {
+      id: 'obj-dispenser-cola-1',
+      type: 'dispenser_cola',
+      label: 'Habbo Ice Cola Machine',
+      x: 2,
+      y: 1,
+      z: 0,
+      rotation: 'sw',
+      rotationAngle: 90,
+      scale: 1,
+      colorVariant: '#dc2626',
+      walkable: false,
+      createdAt: '2026-10-20T09:49:00Z',
+    },
+    {
+      id: 'obj-dispenser-juice-1',
+      type: 'dispenser_juice',
+      label: 'Tropical Juice Dispenser',
+      x: 1,
+      y: 3,
+      z: 0,
+      rotation: 'se',
+      rotationAngle: 0,
+      scale: 1,
+      colorVariant: '#f97316',
+      walkable: false,
+      createdAt: '2026-10-20T09:49:30Z',
+    },
+  ];
 
 export interface RoomPet {
   id: string;
@@ -1774,7 +1935,7 @@ export function validateNewRoomObject(input: {
     typeof input.x !== 'number' ||
     Number.isNaN(input.x) ||
     input.x < 0 ||
-    input.x >= 16
+    input.x >= GRID_SIZE
   ) {
     return {
       valid: false,
@@ -1785,7 +1946,7 @@ export function validateNewRoomObject(input: {
     typeof input.y !== 'number' ||
     Number.isNaN(input.y) ||
     input.y < 0 ||
-    input.y >= 16
+    input.y >= GRID_SIZE
   ) {
     return {
       valid: false,
@@ -2209,9 +2370,9 @@ export function computeTimeOfDayTheme(hourInput: number): TimeOfDayTheme {
 export function filterActiveChatBubbles(
   bubbles: ChatBubble[],
   nowMs: number,
-  ttlMs: number = 4500
+  maxAgeMs: number = 9500
 ): ChatBubble[] {
-  return bubbles.filter((b) => nowMs - b.createdAt < ttlMs);
+  return bubbles.filter((b) => nowMs - b.createdAt < maxAgeMs);
 }
 
 export type PlacementMode = 'replace' | 'stack';

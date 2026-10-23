@@ -45,7 +45,6 @@ import {
   sanitizeRoomSettings,
   pruneStalePlayers,
   pickWalkableSpawnTile,
-  generateRandomVisitorAvatar,
   OBJECT_CATALOG,
   DEFAULT_ROOM_OBJECTS,
   ORGANIZED_ROOM_OBJECTS,
@@ -642,11 +641,17 @@ test('sanitizeRoomSettings supports expanding room grid size (10x10 to 16x16) an
   assert.equal(expanded.wallHeight, 145);
   assert.equal(expanded.floorThickness, 12);
 
-  // Clamps out-of-range gridSize
+  // Clamps out-of-range gridSize to 20
   const clamped = sanitizeRoomSettings({ gridSize: 99 });
-  assert.equal(clamped.gridSize, 16);
+  assert.equal(clamped.gridSize, 20);
 
-  // Open-Hotel spotlight & candle are registered in OBJECT_CATALOG
+  // Open-Hotel spotlight, candle, dispensers & staircases are registered in OBJECT_CATALOG
+  assert.ok(OBJECT_CATALOG.dispenser_coffee);
+  assert.ok(OBJECT_CATALOG.dispenser_cola);
+  assert.ok(OBJECT_CATALOG.dispenser_juice);
+  assert.ok(OBJECT_CATALOG.stairs_up);
+  assert.ok(OBJECT_CATALOG.stairs_down);
+  assert.ok(OBJECT_CATALOG.upper_floor_tile);
   assert.ok(OBJECT_CATALOG.gold_spotlight);
   assert.ok(OBJECT_CATALOG.habbo_candle);
 });

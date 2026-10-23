@@ -111,13 +111,18 @@ export default function IsometricWallPostersOverlay({
               title={`${poster.label} · Click to inspect or customize`}
               className="relative cursor-pointer overflow-hidden rounded-[2px] border-[3px] bg-black transition-shadow duration-150 hover:brightness-110"
             >
-              {/* High-Definition Poster Image */}
+              {/* High-Definition Poster Image (Exact uploaded photo preserved) */}
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 src={imgSrc}
                 alt={poster.label}
                 draggable={false}
-                className="h-full w-full object-cover block pointer-events-none"
+                className={`h-full w-full block pointer-events-none ${
+                  poster.imageUrl &&
+                  !poster.imageUrl.startsWith('data:image/svg+xml')
+                    ? 'object-contain bg-black'
+                    : 'object-cover'
+                }`}
               />
 
               {/* Subtle Glossy Poster Sheen & 4 Golden Pin-Tacks */}

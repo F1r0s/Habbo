@@ -1,67 +1,88 @@
 import { NextRequest, NextResponse } from 'next/server';
 import {
   DEFAULT_ROOM_OBJECTS,
-  DEFAULT_PROJECT_LINKS,
-  DEFAULT_ROOM_PETS,
-  DEFAULT_INVENTORY_ITEMS,
-  DEFAULT_ROOM_SETTINGS,
-  RoomObject,
-  ProjectLink,
-  RoomPet,
-  InventoryItem,
-  RoomSettings,
-  ChatBubble,
-  RoomPlayerPresence,
-  sanitizeRoomSettings,
-  isWallPosterType,
-} from '@/lib/room-engine';
+    DEFAULT_PROJECT_LINKS,
+    DEFAULT_ROOM_PETS,
+    DEFAULT_INVENTORY_ITEMS,
+    DEFAULT_ROOM_SETTINGS,
+    DEFAULT_YOUTUBE_VIDEO_URL,
+    RoomObject,
+    ProjectLink,
+    RoomPet,
+    InventoryItem,
+    RoomSettings,
+    ChatBubble,
+    RoomPlayerPresence,
+    TvPlaybackSyncState,
+    sanitizeRoomSettings,
+    isWallPosterType,
+    isDrinkDispenserType,
+  } from '@/lib/room-engine';
 
-export const dynamic = 'force-dynamic';
+  export const dynamic = 'force-dynamic';
 
-// Server-side store so any visitor entering the website sees the same TV, video, wall/floor settings, chat, players, and room layout
-let serverObjects: RoomObject[] = [...DEFAULT_ROOM_OBJECTS];
-let serverProjects: ProjectLink[] = [...DEFAULT_PROJECT_LINKS];
-let serverPets: RoomPet[] = [...DEFAULT_ROOM_PETS];
-let serverInventory: InventoryItem[] = [...DEFAULT_INVENTORY_ITEMS];
-let serverSettings: RoomSettings = { ...DEFAULT_ROOM_SETTINGS };
-let serverChatLog: ChatBubble[] = [];
-const serverPlayers = new Map<string, RoomPlayerPresence>();
-let hasCustomState = false;
-let updatedAt = 0;
-let hasInitializedPosters = false;
+  // Server-side store so any visitor entering the website sees the same TV, video, wall/floor settings, multiplayer avatars, and chat
+  let serverObjects: RoomObject[] = [...DEFAULT_ROOM_OBJECTS];
+  let serverProjects: ProjectLink[] = [...DEFAULT_PROJECT_LINKS];
+  let serverPets: RoomPet[] = [...DEFAULT_ROOM_PETS];
+  let serverInventory: InventoryItem[] = [...DEFAULT_INVENTORY_ITEMS];
+  let serverSettings: RoomSettings = { ...DEFAULT_ROOM_SETTINGS };
+  let serverChatLog: ChatBubble[] = [];
+  const serverPlayers = new Map<string, RoomPlayerPresence>();
+  let serverTvSync: TvPlaybackSyncState = {
+    videoUrl: DEFAULT_YOUTUBE_VIDEO_URL,
+    isPlaying: true,
+    seekOffsetSec: 0,
+    startedAtServerMs: Date.now(),
+    updatedAt: Date.now(),
+  };
+  let hasCustomState = false;
+  let updatedAt = 0;
+  let hasInitializedPosters = false;
 
-function getActiveServerPlayers(): RoomPlayerPresence[] {
-  const now = Date.now();
-  for (const [id, player] of serverPlayers.entries()) {
-    if (now - player.lastSeenAt > 14000) {
-      serverPlayers.delete(id);
+  function pruneStalePlayers() {
+    const now = Date.now();
+    for (const [id, p] of serverPlayers.entries()) {
+      if (now - p.lastSeenAt > 16000) {
+        serverPlayers.delete(id);
+      }
     }
   }
-  return Array.from(serverPlayers.values());
-}
 
-export async function GET() {
-  if (!hasInitializedPosters) {
-    hasInitializedPosters = true;
-    const hasAnyPoster = serverObjects.some((o) => isWallPosterType(o.type));
-    if (!hasAnyPoster) {
-      const defaultPosters = DEFAULT_ROOM_OBJECTS.filter((o) =>
-        isWallPosterType(o.type)
+  export async function GET() {
+    if (!hasInitializedPosters) {
+      hasInitializedPosters = true;
+      const hasAnyPoster = serverObjects.some((o) => isWallPosterType(o.type));
+      if (!hasAnyPoster) {
+        const defaultPosters = DEFAULT_ROOM_OBJECTS.filter((o) =>
+          isWallPosterType(o.type)
+        );
+        serverObjects = [...serverObjects, ...defaultPosters];
+      }
+      const hasAnyDispenser = serverObjects.some((o) =>
+        Boolean(isDrinkDispenserType(o.type))
       );
-      serverObjects = [...serverObjects, ...defaultPosters];
+      if (!hasAnyDispenser) {
+        const defaultDispensers = DEFAULT_ROOM_OBJECTS.filter((o) =>
+          Boolean(isDrinkDispenserType(o.type))
+        );
+        serverObjects = [...serverObjects, ...defaultDispensers];
+      }
     }
-  }
-  return NextResponse.json({
-    objects: serverObjects,
-    projects: serverProjects,
-    pets: serverPets,
-    inventory: serverInventory,
-    settings: serverSettings,
-    chatLog: serverChatLog.slice(-12),
-    players: getActiveServerPlayers(),
-    hasCustomState,
-    updatedAt,
-  });
+    pruneStalePlayers();
+    return NextResponse.json({
+      objects: serverObjects,
+      projects: serverProjects,
+      pets: serverPets,
+      inventory: serverInventory,
+      settings: serverSettings,
+      chatLog: serverChatLog.slice(-15),
+      players: Array.from(serverPlayers.values()),
+      tvSync: serverTvSync,
+      serverNow: Date.now(),
+      hasCustomState,
+      updatedAt,
+    });
 }
 
 export async function POST(req: NextRequest) {
@@ -71,6 +92,16 @@ export async function POST(req: NextRequest) {
       serverObjects = body.objects;
       hasCustomState = true;
       updatedAt = Date.now();
+      const tvObj = serverObjects.find((o) => o.type === 'youtube_tv');
+      if (tvObj?.videoUrl && tvObj.videoUrl !== serverTvSync.videoUrl) {
+        serverTvSync = {
+          videoUrl: tvObj.videoUrl,
+          isPlaying: true,
+          seekOffsetSec: 0,
+          startedAtServerMs: Date.now(),
+          updatedAt: Date.now(),
+        };
+      }
     }
     if (Array.isArray(body.projects)) {
       serverProjects = body.projects;
@@ -95,54 +126,62 @@ export async function POST(req: NextRequest) {
       hasCustomState = true;
       updatedAt = Date.now();
     }
-    if (body.chatBubble && typeof body.chatBubble.text === 'string') {
-      const bubble: ChatBubble = {
-        id:
-          body.chatBubble.id ||
-          `chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        speaker: String(body.chatBubble.speaker || 'Guest').slice(0, 28),
-        speakerType: body.chatBubble.speakerType || 'avatar',
-        text: String(body.chatBubble.text).trim().slice(0, 140),
-        isShout: Boolean(body.chatBubble.isShout),
-        offsetY: 4,
-        createdAt: Date.now(),
-      };
-      serverChatLog = [...serverChatLog.slice(-15), bubble];
-    }
-    if (
-      body.leavePlayerId &&
-      typeof body.leavePlayerId === 'string'
-    ) {
-      serverPlayers.delete(body.leavePlayerId);
-    }
-    if (
-      body.playerPresence &&
-      typeof body.playerPresence === 'object' &&
-      typeof body.playerPresence.id === 'string'
-    ) {
-      const p = body.playerPresence as RoomPlayerPresence;
-      serverPlayers.set(p.id, {
-        id: p.id,
-        name: String(p.name || 'Guest').slice(0, 24),
-        isOwner: Boolean(p.isOwner),
-        x: typeof p.x === 'number' ? p.x : 4,
-        y: typeof p.y === 'number' ? p.y : 5,
-        targetX: typeof p.targetX === 'number' ? p.targetX : 4,
-        targetY: typeof p.targetY === 'number' ? p.targetY : 5,
-        facing:
-          p.facing === 'se' ||
-          p.facing === 'sw' ||
-          p.facing === 'nw' ||
-          p.facing === 'ne'
-            ? p.facing
-            : 'sw',
-        isSitting: Boolean(p.isSitting),
-        action:
-          p.action === 'wave' || p.action === 'dance' ? p.action : 'none',
-        avatar: p.avatar,
-        lastSeenAt: Date.now(),
-      });
-    }
+    if (body.playerPresence && typeof body.playerPresence.id === 'string') {
+          const p = body.playerPresence as RoomPlayerPresence;
+          serverPlayers.set(p.id, {
+            ...p,
+            lastSeenAt: Date.now(),
+          });
+        }
+        if (typeof body.leavePlayerId === 'string') {
+          serverPlayers.delete(body.leavePlayerId);
+        }
+        if (body.tvSync && typeof body.tvSync === 'object') {
+          const nextUrl =
+            typeof body.tvSync.videoUrl === 'string' &&
+            body.tvSync.videoUrl.trim().length > 0
+              ? body.tvSync.videoUrl.trim()
+              : serverTvSync.videoUrl;
+          const nextPlaying =
+            typeof body.tvSync.isPlaying === 'boolean'
+              ? body.tvSync.isPlaying
+              : serverTvSync.isPlaying;
+          const nextSeek =
+            typeof body.tvSync.seekOffsetSec === 'number'
+              ? Math.max(0, body.tvSync.seekOffsetSec)
+              : serverTvSync.seekOffsetSec;
+          serverTvSync = {
+            videoUrl: nextUrl,
+            isPlaying: nextPlaying,
+            seekOffsetSec: nextSeek,
+            startedAtServerMs: Date.now(),
+            updatedAt: Date.now(),
+          };
+        }
+        if (body.chatBubble && typeof body.chatBubble.text === 'string') {
+          const bubble: ChatBubble = {
+            id:
+              body.chatBubble.id ||
+              `chat-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            speaker: String(body.chatBubble.speaker || 'Guest').slice(0, 28),
+            speakerId:
+              typeof body.chatBubble.speakerId === 'string'
+                ? body.chatBubble.speakerId
+                : undefined,
+            speakerTile:
+              body.chatBubble.speakerTile &&
+              typeof body.chatBubble.speakerTile.x === 'number'
+                ? body.chatBubble.speakerTile
+                : undefined,
+            speakerType: body.chatBubble.speakerType || 'avatar',
+            text: String(body.chatBubble.text).trim().slice(0, 140),
+            isShout: Boolean(body.chatBubble.isShout),
+            offsetY: 0,
+            createdAt: Date.now(),
+          };
+          serverChatLog = [...serverChatLog.slice(-15), bubble];
+        }
+        pruneStalePlayers();
     if (body.reset === true) {
       serverObjects = [...DEFAULT_ROOM_OBJECTS];
       serverProjects = [...DEFAULT_PROJECT_LINKS];
@@ -153,17 +192,19 @@ export async function POST(req: NextRequest) {
       updatedAt = Date.now();
     }
     return NextResponse.json({
-      ok: true,
-      objects: serverObjects,
-      projects: serverProjects,
-      pets: serverPets,
-      inventory: serverInventory,
-      settings: serverSettings,
-      chatLog: serverChatLog.slice(-12),
-      players: getActiveServerPlayers(),
-      hasCustomState,
-      updatedAt,
-    });
+          ok: true,
+          objects: serverObjects,
+          projects: serverProjects,
+          pets: serverPets,
+          inventory: serverInventory,
+          settings: serverSettings,
+          chatLog: serverChatLog.slice(-15),
+          players: Array.from(serverPlayers.values()),
+          tvSync: serverTvSync,
+          serverNow: Date.now(),
+          hasCustomState,
+          updatedAt,
+        });
   } catch {
     return NextResponse.json({ error: 'Invalid payload' }, { status: 400 });
   }
