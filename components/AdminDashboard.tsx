@@ -54,9 +54,12 @@ import {
   normalizeYouTubeEmbedUrl,
   MIN_OBJECT_SCALE,
   MAX_OBJECT_SCALE,
+  FloorPatternType,
   DEFAULT_POSTER_IMAGES,
   isWallPosterType,
+  resolveStaircaseTargetFloor,
   generateFloorDeckForStaircase,
+  hitTestRoomObjectAtScreen,
 } from '@/lib/room-engine';
 import {
   renderIsometricRoom,
@@ -308,6 +311,9 @@ export default function AdminDashboard() {
     useState<DragFurniturePayload | null>(null);
   const [dropHoverTile, setDropHoverTile] = useState<GridCoord | null>(null);
   const [canvasHoverTile, setCanvasHoverTile] = useState<GridCoord | null>(null);
+  const [hoveredPlacedObjectId, setHoveredPlacedObjectId] = useState<
+    string | null
+  >(null);
 
   // Placement, Manual Selection & Manual Floor Builder settings
   const [placementMode, setPlacementMode] = useState<PlacementMode>('replace');
@@ -547,8 +553,8 @@ export default function AdminDashboard() {
       avatarFacing: 'se',
       isAvatarWalking: false,
       hoveredTile: activePreviewTile,
-      selectedTile: { x: coordX, y: coordY },
-      hoveredObjectId: null,
+      selectedTile: selectedPlacedObjectId ? { x: coordX, y: coordY } : null,
+      hoveredObjectId: hoveredPlacedObjectId,
       selectedObjectId: selectedPlacedObjectId,
       tick: 12,
       showGridOverlay,
@@ -582,6 +588,7 @@ export default function AdminDashboard() {
     colorVariant,
     linkedProjectId,
     previewZ,
+    hoveredPlacedObjectId,
     selectedPlacedObjectId,
     showGridOverlay,
     useStackBrush,
@@ -735,7 +742,28 @@ export default function AdminDashboard() {
       originX: dynamicOriginX,
       originY: dynamicOriginY,
       gridSize: activeGridSize,
+      floorZ: activeBuildFloorZ,
+      customFloorTiles: roomSettings.customFloorTiles,
+      removedBaseTiles: roomSettings.removedBaseTiles,
+      allowBorderExpansion: true,
     });
+  };
+
+  const resolveObjectAtPointer = (clientX: number, clientY: number) => {
+    const canvas = previewCanvasRef.current;
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    const relX = ((clientX - rect.left) / rect.width) * dynamicCanvasW;
+    const relY = ((clientY - rect.top) / rect.height) * dynamicCanvasH;
+    return hitTestRoomObjectAtScreen(
+      relX,
+      relY,
+      objects,
+      dynamicOriginX,
+      dynamicOriginY,
+      false
+    );
   };
 
   const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -751,12 +779,31 @@ export default function AdminDashboard() {
 
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const drag = adminCamDragRef.current;
+    const tile = resolveTileFromPointer(e.clientX, e.clientY);
+
+    // If holding mouse down in Manual Floor Paint Mode, paint/erase floor tiles continuously like Minecraft!
+    if (drag.isDown && manualFloorTool !== 'none' && tile) {
+      drag.hasMoved = true;
+      paintManualFloorTile(
+        tile.x,
+        tile.y,
+        activeBuildFloorZ,
+        manualFloorTool === 'add_floor' ? 'add' : 'remove',
+        roomSettings.floorColor
+      );
+      setCanvasHoverTile(tile);
+      return;
+    }
+
     if (drag.isDown) {
       const dx = e.clientX - drag.startX;
       const dy = e.clientY - drag.startY;
       if (Math.hypot(dx, dy) > 6) {
         drag.hasMoved = true;
-        const invScale = canvasDisplayScale > 0 ? 1 / canvasDisplayScale : 1;
+        const invScale =
+          canvasDisplayScale * adminCameraZoom > 0
+            ? 1 / (canvasDisplayScale * adminCameraZoom)
+            : 1;
         setAdminCameraPan({
           x: Math.round(drag.initPanX + dx * invScale),
           y: Math.round(drag.initPanY + dy * invScale),
@@ -765,7 +812,12 @@ export default function AdminDashboard() {
       }
     }
 
-    const tile = resolveTileFromPointer(e.clientX, e.clientY);
+    const hitObj =
+      !clickToPlaceMode && manualFloorTool === 'none'
+        ? resolveObjectAtPointer(e.clientX, e.clientY)
+        : null;
+    setHoveredPlacedObjectId(hitObj ? hitObj.id : null);
+
     setCanvasHoverTile((prev) => {
       if (!tile && !prev) return null;
       if (tile && prev && tile.x === prev.x && tile.y === prev.y) return prev;
@@ -849,7 +901,7 @@ export default function AdminDashboard() {
       return;
     }
 
-    // 2. Click-to-Place Furni Mode vs One-by-One Manual Select Mode
+    // 2. Click-to-Place Furni Mode vs Pixel-Accurate One-by-One Manual Select Mode
     if (clickToPlaceMode) {
       placeFurnitureAtTile(
         {
@@ -866,15 +918,19 @@ export default function AdminDashboard() {
         tile.y
       );
     } else {
-      const topObj = getTopObjectAtTile(tile.x, tile.y, objects);
-      if (topObj) {
+      const hitObj =
+        resolveObjectAtPointer(e.clientX, e.clientY) ||
+        getTopObjectAtTile(tile.x, tile.y, objects);
+      if (hitObj) {
         setSelectedPlacedObjectId((prev) =>
-          prev === topObj.id ? null : topObj.id
+          prev === hitObj.id ? null : hitObj.id
         );
-        setObjectScale(clampObjectScale(topObj.scale));
-        setRotation(topObj.rotation);
+        setCoordX(hitObj.x);
+        setCoordY(hitObj.y);
+        setObjectScale(clampObjectScale(hitObj.scale));
+        setRotation(hitObj.rotation);
         setRotationAngle(
-          normalizeRotationAngle(topObj.rotationAngle, topObj.rotation)
+          normalizeRotationAngle(hitObj.rotationAngle, hitObj.rotation)
         );
       } else {
         setSelectedPlacedObjectId(null);
@@ -1010,9 +1066,10 @@ export default function AdminDashboard() {
     const canvas = previewCanvasRef.current;
     if (!canvas) return;
     const updateScale = () => {
-      const rect = canvas.getBoundingClientRect();
-      if (rect.width > 0) {
-        setCanvasDisplayScale(rect.width / dynamicCanvasW);
+      // Use untransformed clientWidth so parent CSS transform: scale(adminCameraZoom) never double-scales overlays!
+      const baseW = canvas.clientWidth;
+      if (baseW > 0) {
+        setCanvasDisplayScale(baseW / dynamicCanvasW);
       }
     };
     updateScale();
@@ -1981,45 +2038,58 @@ export default function AdminDashboard() {
                   </div>
                 </div>
 
-                {/* Floor Pattern & Color Customizer */}
+                {/* Floor Pattern (Granite, Marble, Zellige, Steel, Planks, Checkers) & Color Customizer */}
                 <div className="border-t border-[#999995] pt-1.5 space-y-1">
-                  <div className="flex items-center justify-between font-bold text-[#1E1E1E]">
-                    <span>Floor Style &amp; Color:</span>
-                    <div className="flex items-center gap-1">
-                      {(
-                        [
-                          { id: 'oak_planks', label: 'Planks' },
-                          { id: 'marble_checkers', label: 'Checkers' },
-                          { id: 'studio_tile', label: 'Grid' },
-                          { id: 'cobblestone', label: 'Stone' },
-                          { id: 'cyber_glass', label: 'Neon' },
-                        ] as const
-                      ).map((pat) => (
-                        <button
-                          key={pat.id}
-                          type="button"
-                          onClick={() =>
-                            updateRoomSettings({ floorPattern: pat.id })
-                          }
-                          className={`rounded border px-1 py-0.5 text-[8px] font-bold ${
-                            roomSettings.floorPattern === pat.id
-                              ? 'border-black bg-[#00748C] text-white'
-                              : 'border-[#7A7A76] bg-white text-black'
-                          }`}
-                        >
-                          {pat.label}
-                        </button>
-                      ))}
-                    </div>
+                  <div className="font-bold text-[#1E1E1E]">
+                    Floor Material &amp; Style:
                   </div>
-                  <div className="flex items-center gap-1">
+                  <div className="grid grid-cols-4 gap-1">
+                    {(
+                      [
+                        { id: 'granite_tile', label: 'Granite', col: '#64748B' },
+                        { id: 'carrara_marble', label: 'Marble', col: '#E2E8F0' },
+                        { id: 'oak_planks', label: 'Oak Wood', col: '#DFC184' },
+                        { id: 'marble_checkers', label: 'Checkers', col: '#D6BC8B' },
+                        { id: 'zellige_mosaic', label: 'Zellige', col: '#0D9488' },
+                        { id: 'diamond_steel', label: 'Steel', col: '#475569' },
+                        { id: 'cobblestone', label: 'Stone', col: '#78716C' },
+                        { id: 'cyber_glass', label: 'Neon Grid', col: '#1E293B' },
+                      ] as Array<{
+                        id: FloorPatternType;
+                        label: string;
+                        col: string;
+                      }>
+                    ).map((pat) => (
+                      <button
+                        key={pat.id}
+                        type="button"
+                        onClick={() => {
+                          updateRoomSettings({
+                            floorPattern: pat.id,
+                            floorColor: pat.col,
+                          });
+                          setStatusToast(
+                            `Floor style set to ${pat.label} (Auto-saved)!`
+                          );
+                        }}
+                        className={`rounded border px-1 py-0.5 text-[8px] font-bold ${
+                          roomSettings.floorPattern === pat.id
+                            ? 'border-black bg-[#00748C] text-white'
+                            : 'border-[#7A7A76] bg-white text-black hover:bg-amber-50'
+                        }`}
+                      >
+                        {pat.label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1 pt-0.5">
                     {[
+                      { label: 'Granite Grey', color: '#64748B' },
                       { label: 'Golden Oak', color: '#DFC184' },
-                      { label: 'Marble', color: '#E2E8F0' },
-                      { label: 'Walnut', color: '#92400E' },
+                      { label: 'White Marble', color: '#E2E8F0' },
+                      { label: 'Dark Walnut', color: '#92400E' },
                       { label: 'VIP Red', color: '#991B1B' },
-                      { label: 'Pitch Turf', color: '#166534' },
-                      { label: 'Slate', color: '#475569' },
+                      { label: 'Obsidian', color: '#1E293B' },
                     ].map((preset) => (
                       <button
                         key={preset.label}
@@ -2043,50 +2113,14 @@ export default function AdminDashboard() {
                   </div>
                 </div>
 
-                {/* Custom Ambient Music (.mp3/.wav) Uploader */}
-                <div className="border-t border-[#999995] pt-1.5 flex items-center justify-between gap-1">
+                {/* Permanent Locked Signature Music Credit */}
+                <div className="border-t border-[#999995] pt-1.5 flex items-center justify-between text-[9px]">
                   <span className="font-bold text-[#1E1E1E]">
-                    Room BGM Track:
+                    Room Soundtrack:
                   </span>
-                  <div className="flex items-center gap-1">
-                    <label className="inline-flex items-center gap-1 rounded-[2px] border border-black bg-[#15803D] px-2 py-0.5 text-[9px] font-bold text-white hover:bg-[#16A34A] cursor-pointer">
-                      <Upload className="h-2.5 w-2.5" />
-                      <span>Upload MP3/Audio</span>
-                      <input
-                        type="file"
-                        accept="audio/*"
-                        className="hidden"
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (!file) return;
-                          const reader = new FileReader();
-                          reader.onload = () => {
-                            if (typeof reader.result === 'string') {
-                              setCustomBgmAudio(reader.result);
-                              setStatusToast(
-                                `Loaded custom BGM "${file.name}" (Auto-saved)!`
-                              );
-                            }
-                          };
-                          reader.readAsDataURL(file);
-                        }}
-                      />
-                    </label>
-                    {customBgmUrl && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setCustomBgmAudio(null);
-                          setStatusToast(
-                            'Restored built-in Guitar + 808 Trap Beat BGM!'
-                          );
-                        }}
-                        className="rounded-[2px] border border-black bg-[#C93B2B] px-1.5 py-0.5 text-[9px] font-bold text-white"
-                      >
-                        Reset Beat
-                      </button>
-                    )}
-                  </div>
+                  <span className="rounded border border-black/40 bg-[#2B2827] px-2 py-0.5 font-bold text-[#FACC15]">
+                    Original Instrumental by Higma (Locked 🎸)
+                  </span>
                 </div>
               </div>
             )}
@@ -2700,14 +2734,16 @@ export default function AdminDashboard() {
               onClick={handleCanvasClick}
               onContextMenu={(e) => {
                 e.preventDefault();
+                const hitObj = resolveObjectAtPointer(e.clientX, e.clientY);
                 const tile = resolveTileFromPointer(e.clientX, e.clientY);
-                if (!tile) return;
-                const topObj = getTopObjectAtTile(tile.x, tile.y, objects);
-                if (topObj) {
-                  removeObject(topObj.id);
+                const targetObj =
+                  hitObj ||
+                  (tile ? getTopObjectAtTile(tile.x, tile.y, objects) : null);
+                if (targetObj) {
+                  removeObject(targetObj.id);
                   setSelectedPlacedObjectId(null);
                   setStatusToast(
-                    `Removed ${HABBO_ENGLISH_NAMES[topObj.type] || topObj.label} from (${tile.x}, ${tile.y})!`
+                    `Removed ${HABBO_ENGLISH_NAMES[targetObj.type] || targetObj.label} (${targetObj.x}, ${targetObj.y})!`
                   );
                 }
               }}
@@ -3068,6 +3104,8 @@ export default function AdminDashboard() {
                 <button
                   type="button"
                   onClick={() => {
+                    const { targetZ } =
+                      resolveStaircaseTargetFloor(activeFloorObj);
                     const updated = generateFloorDeckForStaircase(
                       activeFloorObj,
                       roomSettings
@@ -3075,13 +3113,15 @@ export default function AdminDashboard() {
                     updateRoomSettings({
                       customFloorTiles: updated.customFloorTiles,
                     });
+                    setActiveBuildFloorZ(targetZ);
+                    setManualFloorTool('add_floor');
                     setStatusToast(
-                      `Built walkable floor deck for ${activeFloorObj.label} (Auto-saved)!`
+                      `Switched to Floor ${targetZ >= 0 ? `+${targetZ}` : targetZ} Builder! Click or drag to build more floor tiles.`
                     );
                   }}
                   className="inline-flex items-center gap-1 rounded border border-black bg-[#D4912A] px-2 py-0.5 font-bold text-white hover:bg-[#E3A836]"
                 >
-                  <span>+ Build Stair Floor</span>
+                  <span>+ Build Floor {activeFloorObj.type === 'stairs_up' ? 'Upstairs' : 'Downstairs'}</span>
                 </button>
               )}
 

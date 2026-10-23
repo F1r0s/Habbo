@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   DEFAULT_ROOM_OBJECTS,
     DEFAULT_PROJECT_LINKS,
@@ -37,8 +39,72 @@ import {
     updatedAt: Date.now(),
   };
   let hasCustomState = false;
-  let updatedAt = 0;
+  let updatedAt = Date.now();
   let hasInitializedPosters = false;
+  let hasLoadedFromDisk = false;
+
+  const PERSIST_FILE_PATH = path.join(
+    process.cwd(),
+    '.habbofolio-room-state.json'
+  );
+
+  function loadStateFromDiskOnce() {
+    if (hasLoadedFromDisk) return;
+    hasLoadedFromDisk = true;
+    try {
+      if (fs.existsSync(PERSIST_FILE_PATH)) {
+        const raw = fs.readFileSync(PERSIST_FILE_PATH, 'utf8');
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          if (Array.isArray(parsed.objects) && parsed.objects.length > 0) {
+            serverObjects = parsed.objects;
+            hasCustomState = true;
+          }
+          if (Array.isArray(parsed.projects) && parsed.projects.length > 0) {
+            serverProjects = parsed.projects;
+          }
+          if (Array.isArray(parsed.pets)) {
+            serverPets = parsed.pets;
+          }
+          if (Array.isArray(parsed.inventory)) {
+            serverInventory = parsed.inventory;
+          }
+          if (parsed.settings && typeof parsed.settings === 'object') {
+            serverSettings = sanitizeRoomSettings(parsed.settings);
+            hasCustomState = true;
+          }
+          if (typeof parsed.updatedAt === 'number') {
+            updatedAt = parsed.updatedAt;
+          }
+        }
+      }
+    } catch {
+      // Ignore disk read errors in read-only cloud environments
+    }
+  }
+
+  function saveStateToDisk() {
+    try {
+      fs.writeFileSync(
+        PERSIST_FILE_PATH,
+        JSON.stringify(
+          {
+            objects: serverObjects,
+            projects: serverProjects,
+            pets: serverPets,
+            inventory: serverInventory,
+            settings: serverSettings,
+            updatedAt,
+          },
+          null,
+          2
+        ),
+        'utf8'
+      );
+    } catch {
+      // Ignore disk write errors in read-only cloud environments
+    }
+  }
 
   function pruneStalePlayers() {
     const now = Date.now();
@@ -50,6 +116,7 @@ import {
   }
 
   export async function GET() {
+    loadStateFromDiskOnce();
     if (!hasInitializedPosters) {
       hasInitializedPosters = true;
       const hasAnyPoster = serverObjects.some((o) => isWallPosterType(o.type));
@@ -87,11 +154,19 @@ import {
 
 export async function POST(req: NextRequest) {
   try {
+    loadStateFromDiskOnce();
     const body = await req.json();
+    let didMutateRoom = false;
+    const nextStamp = Math.max(
+      Date.now(),
+      updatedAt + 1,
+      typeof body.clientUpdatedAt === 'number' ? body.clientUpdatedAt : 0
+    );
     if (Array.isArray(body.objects)) {
       serverObjects = body.objects;
       hasCustomState = true;
-      updatedAt = Date.now();
+      updatedAt = nextStamp;
+      didMutateRoom = true;
       const tvObj = serverObjects.find((o) => o.type === 'youtube_tv');
       if (tvObj?.videoUrl && tvObj.videoUrl !== serverTvSync.videoUrl) {
         serverTvSync = {
@@ -106,17 +181,20 @@ export async function POST(req: NextRequest) {
     if (Array.isArray(body.projects)) {
       serverProjects = body.projects;
       hasCustomState = true;
-      updatedAt = Date.now();
+      updatedAt = nextStamp;
+      didMutateRoom = true;
     }
     if (Array.isArray(body.pets)) {
       serverPets = body.pets;
       hasCustomState = true;
-      updatedAt = Date.now();
+      updatedAt = nextStamp;
+      didMutateRoom = true;
     }
     if (Array.isArray(body.inventory)) {
       serverInventory = body.inventory;
       hasCustomState = true;
-      updatedAt = Date.now();
+      updatedAt = nextStamp;
+      didMutateRoom = true;
     }
     if (body.settings && typeof body.settings === 'object') {
       serverSettings = sanitizeRoomSettings({
@@ -124,7 +202,8 @@ export async function POST(req: NextRequest) {
         ...body.settings,
       });
       hasCustomState = true;
-      updatedAt = Date.now();
+      updatedAt = nextStamp;
+      didMutateRoom = true;
     }
     if (body.playerPresence && typeof body.playerPresence.id === 'string') {
           const p = body.playerPresence as RoomPlayerPresence;
@@ -189,7 +268,11 @@ export async function POST(req: NextRequest) {
       serverInventory = [...DEFAULT_INVENTORY_ITEMS];
       serverSettings = { ...DEFAULT_ROOM_SETTINGS };
       hasCustomState = false;
-      updatedAt = Date.now();
+      updatedAt = nextStamp;
+      didMutateRoom = true;
+    }
+    if (didMutateRoom) {
+      saveStateToDisk();
     }
     return NextResponse.json({
           ok: true,

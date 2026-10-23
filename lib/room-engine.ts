@@ -217,7 +217,11 @@ export type FloorPatternType =
   | 'studio_tile'
   | 'cobblestone'
   | 'emerald_turf'
-  | 'cyber_glass';
+  | 'cyber_glass'
+  | 'granite_tile'
+  | 'carrara_marble'
+  | 'zellige_mosaic'
+  | 'diamond_steel';
 
 export interface CustomFloorTile {
   x: number;
@@ -263,10 +267,10 @@ export function sanitizeRoomSettings(
     return { ...DEFAULT_ROOM_SETTINGS };
   }
   const rawGrid =
-      typeof input.gridSize === 'number' && !Number.isNaN(input.gridSize)
-        ? Math.round(input.gridSize)
-        : DEFAULT_ROOM_SETTINGS.gridSize;
-    const clampedGrid = Math.max(8, Math.min(20, rawGrid));
+    typeof input.gridSize === 'number' && !Number.isNaN(input.gridSize)
+      ? Math.round(input.gridSize)
+      : DEFAULT_ROOM_SETTINGS.gridSize;
+  const clampedGrid = Math.max(10, Math.min(28, rawGrid));
 
   const rawWallH =
     typeof input.wallHeight === 'number' && !Number.isNaN(input.wallHeight)
@@ -297,6 +301,10 @@ export function sanitizeRoomSettings(
     'cobblestone',
     'emerald_turf',
     'cyber_glass',
+    'granite_tile',
+    'carrara_marble',
+    'zellige_mosaic',
+    'diamond_steel',
   ];
 
   return {
@@ -2265,6 +2273,10 @@ export function resolveCanvasDropTile(params: {
   originX: number;
   originY: number;
   gridSize?: number;
+  floorZ?: number;
+  customFloorTiles?: CustomFloorTile[];
+  removedBaseTiles?: string[];
+  allowBorderExpansion?: boolean;
 }): GridCoord | null {
   const {
     clientX,
@@ -2278,14 +2290,141 @@ export function resolveCanvasDropTile(params: {
     originX,
     originY,
     gridSize = GRID_SIZE,
+    floorZ = 0,
+    customFloorTiles,
+    removedBaseTiles,
+    allowBorderExpansion = false,
   } = params;
 
   if (rectWidth <= 0 || rectHeight <= 0) return null;
   const relX = ((clientX - rectLeft) / rectWidth) * logicalWidth;
-  const relY = ((clientY - rectTop) / rectHeight) * logicalHeight;
+  const relY =
+    ((clientY - rectTop) / rectHeight) * logicalHeight +
+    floorZ * 1.35 * Z_HEIGHT_PX;
   const grid = screenToGrid(relX, relY, originX, originY);
-  if (!isWithinGrid(grid.x, grid.y, gridSize)) return null;
+  if (allowBorderExpansion) {
+    if (
+      grid.x >= -6 &&
+      grid.x <= gridSize + 10 &&
+      grid.y >= -6 &&
+      grid.y <= gridSize + 10
+    ) {
+      return grid;
+    }
+    return null;
+  }
+  if (
+    !isWithinGrid(grid.x, grid.y, gridSize, customFloorTiles, removedBaseTiles)
+  ) {
+    return null;
+  }
   return grid;
+}
+
+/**
+ * Pixel-accurate front-to-back 2D bounding-box hit test for any placed RoomObject at logical canvas coordinates (localX, localY).
+ */
+export function hitTestRoomObjectAtScreen(
+  localX: number,
+  localY: number,
+  objects: RoomObject[],
+  originX: number,
+  originY: number,
+  skipRugs: boolean = false
+): RoomObject | null {
+  // Check from frontmost object to backmost object so foreground furniture always wins
+  const frontToBack = [...sortObjectsForRender(objects)].reverse();
+
+  for (const obj of frontToBack) {
+    if (skipRugs && obj.type.startsWith('luxury_rug')) continue;
+
+    const scale = clampObjectScale(obj.scale);
+    const { sx, sy } = gridToScreen(obj.x, obj.y, obj.z, originX, originY);
+
+    if (obj.type === 'youtube_tv') {
+      const isRightWall = obj.rotation === 'se' || obj.rotation === 'nw';
+      const anchor =
+        isRightWall && obj.y <= 1
+          ? gridToScreen(5, 0, obj.z, originX, originY)
+          : !isRightWall && obj.x <= 1
+            ? gridToScreen(0, 5, obj.z, originX, originY)
+            : { sx, sy };
+      const halfW = 144 * scale;
+      const halfH = 62 * scale;
+      const cy = anchor.sy - 60;
+      if (
+        localX >= anchor.sx - halfW &&
+        localX <= anchor.sx + halfW &&
+        localY >= cy - halfH &&
+        localY <= cy + halfH
+      ) {
+        return obj;
+      }
+      continue;
+    }
+
+    if (isWallPosterType(obj.type)) {
+      const halfW = 48 * scale;
+      const halfH = 44 * scale;
+      const cy = sy - 56;
+      if (
+        localX >= sx - halfW &&
+        localX <= sx + halfW &&
+        localY >= cy - halfH &&
+        localY <= cy + halfH
+      ) {
+        return obj;
+      }
+      continue;
+    }
+
+    if (obj.type.startsWith('luxury_rug')) {
+      const dx = Math.abs(localX - sx);
+      const dy = Math.abs(localY - (sy + TILE_HEIGHT / 2));
+      if (
+        dx / ((TILE_WIDTH / 2) * scale) + dy / ((TILE_HEIGHT / 2) * scale) <=
+        1.0
+      ) {
+        return obj;
+      }
+      continue;
+    }
+
+    // Standard 3D sprite bounding box above tile (sx, sy)
+    const spriteTopHeight =
+      obj.type === 'royal_crown_gold' ||
+      obj.type === 'royal_crown_purple' ||
+      obj.type === 'potted_plant' ||
+      obj.type === 'neon_bulletin' ||
+      obj.type === 'floating_screen' ||
+      obj.type === 'admin_console'
+        ? 44
+        : obj.type === 'dispenser_coffee' ||
+            obj.type === 'dispenser_cola' ||
+            obj.type === 'dispenser_juice'
+          ? 38
+          : obj.type === 'white_sofa' ||
+              obj.type === 'wood_stool' ||
+              obj.type === 'stairs_up' ||
+              obj.type === 'stairs_down'
+            ? 26
+            : 20;
+
+    const halfSpanX = 24 * scale;
+    const boxTop = sy + TILE_HEIGHT / 2 - spriteTopHeight * scale;
+    const boxBottom = sy + TILE_HEIGHT + 2;
+
+    if (
+      localX >= sx - halfSpanX &&
+      localX <= sx + halfSpanX &&
+      localY >= boxTop &&
+      localY <= boxBottom
+    ) {
+      return obj;
+    }
+  }
+
+  return null;
 }
 
 export type PatrolDirection = IsometricRotation;
@@ -2655,9 +2794,11 @@ export function moveRoomObjectToTile(
   targetX: number,
   targetY: number,
   mode: PlacementMode = 'replace',
-  gridSize: number = 16
+  gridSize: number = 28
 ): RoomObject[] {
-  if (!isWithinGrid(targetX, targetY, gridSize)) return existingObjects;
+  if (targetX < -6 || targetX > gridSize + 10 || targetY < -6 || targetY > gridSize + 10) {
+    return existingObjects;
+  }
   const targetObj = existingObjects.find((o) => o.id === objectId);
   if (!targetObj) return existingObjects;
 

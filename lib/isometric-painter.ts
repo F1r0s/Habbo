@@ -587,25 +587,74 @@ function drawBrickWallsAndFloor(
   } else if (
     roomSettings.floorPattern === 'studio_tile' ||
     roomSettings.floorPattern === 'cyber_glass' ||
-    roomSettings.floorPattern === 'emerald_turf'
+    roomSettings.floorPattern === 'emerald_turf' ||
+    roomSettings.floorPattern === 'granite_tile' ||
+    roomSettings.floorPattern === 'carrara_marble' ||
+    roomSettings.floorPattern === 'zellige_mosaic' ||
+    roomSettings.floorPattern === 'diamond_steel'
   ) {
     const tileStroke =
       roomSettings.floorPattern === 'cyber_glass'
         ? '#38BDF8'
-        : floorLineStroke;
+        : roomSettings.floorPattern === 'granite_tile'
+          ? shadeHexColor(baseFloorFill, 0.65)
+          : floorLineStroke;
+    const altFill = shadeHexColor(baseFloorFill, 0.93);
+    const speckleDark = shadeHexColor(baseFloorFill, 0.62);
+    const speckleLight = 'rgba(255, 255, 255, 0.35)';
+
     for (let gx = 0; gx < activeGridSize; gx++) {
       for (let gy = 0; gy < activeGridSize; gy++) {
         const { sx, sy } = gridToScreen(gx, gy, 0, originX, originY);
+        const tileFill =
+          (gx + gy) % 2 === 0 ? baseFloorFill : altFill;
         drawIsoDiamond(
           ctx,
           sx,
           sy,
           TILE_WIDTH,
           TILE_HEIGHT,
-          baseFloorFill,
+          tileFill,
           tileStroke,
           1
         );
+
+        if (roomSettings.floorPattern === 'granite_tile') {
+          // Polished Granite mineral speckles & inner bevel
+          ctx.fillStyle = speckleDark;
+          ctx.fillRect(Math.round(sx - 8), Math.round(sy + 11), 2, 2);
+          ctx.fillRect(Math.round(sx + 6), Math.round(sy + 14), 2, 2);
+          ctx.fillRect(Math.round(sx - 2), Math.round(sy + 20), 2, 2);
+          ctx.fillStyle = speckleLight;
+          ctx.fillRect(Math.round(sx - 4), Math.round(sy + 9), 2, 1);
+          ctx.fillRect(Math.round(sx + 4), Math.round(sy + 18), 2, 1);
+        } else if (roomSettings.floorPattern === 'carrara_marble') {
+          // Luxury Carrara marble diagonal veining
+          ctx.strokeStyle = 'rgba(148, 163, 184, 0.45)';
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.moveTo(sx - 10, sy + 12);
+          ctx.lineTo(sx + 2, sy + 16);
+          ctx.lineTo(sx + 11, sy + 21);
+          ctx.stroke();
+        } else if (roomSettings.floorPattern === 'zellige_mosaic') {
+          // Moroccan Zellige center star diamond
+          drawIsoDiamond(
+            ctx,
+            sx,
+            sy + 10,
+            20,
+            10,
+            shadeHexColor(baseFloorFill, 0.75),
+            '#FACC15',
+            1
+          );
+        } else if (roomSettings.floorPattern === 'diamond_steel') {
+          ctx.fillStyle = speckleLight;
+          ctx.fillRect(Math.round(sx - 6), Math.round(sy + 14), 3, 1);
+          ctx.fillRect(Math.round(sx + 4), Math.round(sy + 14), 3, 1);
+          ctx.fillRect(Math.round(sx - 1), Math.round(sy + 18), 3, 1);
+        }
       }
     }
   }
@@ -1514,6 +1563,10 @@ function drawRoomObject(
 
     case 'youtube_tv': {
       const isCatalogPreview = obj.id.startsWith('__');
+      // On the live room wall, IsometricYoutubeTvOverlay renders the 3D screen & bezel—skip canvas double-draw!
+      if (!isCatalogPreview) {
+        break;
+      }
       const isRightWallAligned =
         obj.rotation === 'se' || obj.rotation === 'nw';
       const slope = isRightWallAligned ? 0.5 : -0.5;
@@ -1687,8 +1740,14 @@ function drawRoomObject(
     case 'poster_chelsea':
     case 'poster_raja_gb05':
     case 'poster_wydad_winners': {
+      const isCatalogPreview = obj.id.startsWith('__');
+      // On the live room wall, IsometricWallPostersOverlay renders the crisp 3D poster—skip canvas double-draw!
+      if (!isCatalogPreview) {
+        break;
+      }
       const isCatalogThumb = obj.id.startsWith('__slot_');
-      const isBuilderBox = obj.id === '__bc_preview__' || obj.id.startsWith('__bc_stack_');
+      const isBuilderBox =
+        obj.id === '__bc_preview__' || obj.id.startsWith('__bc_stack_');
       const isRightWall =
         effectiveRotation === 'se' || effectiveRotation === 'nw';
       const slope = isCatalogThumb ? 0.15 : isRightWall ? 0.5 : -0.5;
@@ -1839,54 +1898,95 @@ function drawRoomObject(
     case 'stairs_up':
     case 'stairs_down': {
       const isUp = obj.type === 'stairs_up';
-      const stepColTop = obj.colorVariant || (isUp ? '#EAB308' : '#B45309');
-      const stepColLeft = shadeHexColor(stepColTop, 0.82);
-      const stepColRight = shadeHexColor(stepColTop, 0.68);
-      const dirX =
-        effectiveRotation === 'se'
-          ? 1
-          : effectiveRotation === 'nw'
-            ? -1
-            : 0;
-      const dirY =
-        effectiveRotation === 'sw'
-          ? 1
-          : effectiveRotation === 'ne'
-            ? -1
-            : 0;
+      const hasCustomTint =
+        obj.colorVariant &&
+        obj.colorVariant.toLowerCase() !== '#d97706' &&
+        obj.colorVariant.toLowerCase() !== '#92400e';
+      const treadTop = hasCustomTint
+        ? obj.colorVariant!
+        : isUp
+          ? '#DFC184'
+          : '#C29B61';
+      const riserLeft = shadeHexColor(treadTop, 0.78);
+      const stringerRight = shadeHexColor(treadTop, 0.62);
 
-      // 4 isometric steps ascending or descending
-      for (let s = 0; s < 4; s++) {
-        const t = (s - 1.5) * 0.22;
-        const stepSx = sx + (dirX - dirY) * t * (TILE_WIDTH / 2);
-        const stepSy =
-          sy +
-          (dirX + dirY) * t * (TILE_HEIGHT / 2) +
-          (isUp ? -s * 5 + 6 : s * 3 + 2);
-        const stepH = isUp ? 5 + s * 4 : Math.max(3, 14 - s * 3);
+      // Authentic Habbo Hotel 4-Step Full-Tile Isometric Staircase
+      // Each step spans the full width of the tile and rises smoothly by 6px per step (24px total = 1 story)
+      const stepCount = 4;
+      const orderedSteps = isUp ? [0, 1, 2, 3] : [3, 2, 1, 0];
+
+      for (const s of orderedSteps) {
+        // Position along the staircase direction from bottom step (s=0) to top step (s=3)
+        const progress = (s - 1.5) * 0.24;
+        let dxIso = 0;
+        let dyIso = 0;
+        if (effectiveRotation === 'se') {
+          dxIso = progress * (TILE_WIDTH / 2);
+          dyIso = progress * (TILE_HEIGHT / 2);
+        } else if (effectiveRotation === 'sw') {
+          dxIso = -progress * (TILE_WIDTH / 2);
+          dyIso = progress * (TILE_HEIGHT / 2);
+        } else if (effectiveRotation === 'nw') {
+          dxIso = -progress * (TILE_WIDTH / 2);
+          dyIso = -progress * (TILE_HEIGHT / 2);
+        } else {
+          dxIso = progress * (TILE_WIDTH / 2);
+          dyIso = -progress * (TILE_HEIGHT / 2);
+        }
+
+        const stepH = isUp ? (s + 1) * 6 : (4 - s) * 5;
+        const stepSx = Math.round(sx + dxIso);
+        const stepSy = Math.round(sy + 8 + dyIso);
+
         drawIsoPrism(
           ctx,
           stepSx,
           stepSy,
-          isUp ? 44 : 40,
-          isUp ? 14 : 13,
+          50,
+          18,
           stepH,
-          stepColTop,
-          stepColLeft,
-          stepColRight,
+          treadTop,
+          riserLeft,
+          stringerRight,
           '#000000'
+        );
+
+        // Habbo pixel anti-slip tread strip on each step
+        drawIsoDiamond(
+          ctx,
+          stepSx,
+          stepSy - stepH + 2,
+          42,
+          12,
+          shadeHexColor(treadTop, 0.9)
         );
       }
 
-      // Chrome handrail post & bar
+      // Authentic Habbo Dual Baluster Posts & Slanted Handrail
+      const railOffsetX =
+        effectiveRotation === 'sw' || effectiveRotation === 'nw' ? -16 : 16;
+      const post1X = Math.round(sx - railOffsetX * 0.6);
+      const post1Y = Math.round(sy + 14);
+      const post2X = Math.round(sx + railOffsetX * 0.8);
+      const post2Y = Math.round(sy - (isUp ? 18 : 4));
+
+      // Baluster vertical posts
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(post1X - 2, post1Y - 18, 4, 18);
+      ctx.fillRect(post2X - 2, post2Y - 20, 4, 20);
+      ctx.fillStyle = '#F8FAFC';
+      ctx.fillRect(post1X - 1, post1Y - 17, 2, 16);
+      ctx.fillRect(post2X - 1, post2Y - 19, 2, 18);
+
+      // Slanted handrail bar
       ctx.strokeStyle = '#000000';
-      ctx.lineWidth = 3;
+      ctx.lineWidth = 4;
       ctx.beginPath();
-      ctx.moveTo(sx - 16, sy + 2);
-      ctx.lineTo(sx + 14, isUp ? sy - 22 : sy + 10);
+      ctx.moveTo(post1X, post1Y - 17);
+      ctx.lineTo(post2X, post2Y - 19);
       ctx.stroke();
-      ctx.strokeStyle = '#F8FAFC';
-      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = '#FACC15';
+      ctx.lineWidth = 2;
       ctx.stroke();
       break;
     }
@@ -1955,8 +2055,14 @@ function drawEditorGridOverlay(
 ) {
   ctx.save();
   const zElev = floorZ * 1.35;
-  for (let y = 0; y < gridSize; y++) {
-    for (let x = 0; x < gridSize; x++) {
+
+  // Draw the main floor grid + a 2-tile outer Minecraft/Habbo border expansion zone along the front/side edges!
+  const minCoord = floorZ !== 0 ? -2 : 0;
+  const maxCoord = gridSize + 3;
+
+  for (let y = minCoord; y < maxCoord; y++) {
+    for (let x = minCoord; x < maxCoord; x++) {
+      const isInsideBase = x >= 0 && x < gridSize && y >= 0 && y < gridSize;
       const { sx, sy } = gridToScreen(x, y, zElev, originX, originY);
       const isHovered = hoveredTile?.x === x && hoveredTile?.y === y;
       const isSelected = selectedTile?.x === x && selectedTile?.y === y;
@@ -1969,12 +2075,12 @@ function drawEditorGridOverlay(
           TILE_WIDTH - 2,
           TILE_HEIGHT - 1,
           isHovered
-            ? 'rgba(255, 255, 255, 0.35)'
-            : 'rgba(250, 204, 21, 0.25)',
-          isHovered ? '#FFFFFF' : '#FACC15',
+            ? 'rgba(250, 204, 21, 0.38)'
+            : 'rgba(56, 189, 248, 0.28)',
+          isHovered ? '#FACC15' : '#38BDF8',
           2
         );
-      } else {
+      } else if (isInsideBase) {
         drawIsoDiamond(
           ctx,
           sx,
@@ -1982,7 +2088,19 @@ function drawEditorGridOverlay(
           TILE_WIDTH - 2,
           TILE_HEIGHT - 1,
           'transparent',
-          'rgba(0, 0, 0, 0.12)',
+          'rgba(0, 0, 0, 0.14)',
+          1
+        );
+      } else {
+        // Outer border expansion slots (like the yellow border loops in Screenshot 1!)
+        drawIsoDiamond(
+          ctx,
+          sx,
+          sy + 1,
+          TILE_WIDTH - 4,
+          TILE_HEIGHT - 2,
+          'rgba(250, 204, 21, 0.05)',
+          'rgba(250, 204, 21, 0.24)',
           1
         );
       }
@@ -2925,8 +3043,19 @@ export function renderIsometricRoom(params: RenderRoomParams) {
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, width, height);
 
+  // Ensure the floor is always large enough to cover any placed furniture so items never float in black void
+  let effectiveGridSize = roomSettings.gridSize || GRID_SIZE;
+  for (const o of objects) {
+    if (o.x + 1 > effectiveGridSize) effectiveGridSize = o.x + 1;
+    if (o.y + 1 > effectiveGridSize) effectiveGridSize = o.y + 1;
+  }
+  const effectiveRoomSettings: RoomSettings =
+    effectiveGridSize !== roomSettings.gridSize
+      ? { ...roomSettings, gridSize: Math.min(28, effectiveGridSize) }
+      : roomSettings;
+
   // 1. Draw cutaway walls and floor with custom RoomSettings (gridSize, wall/floor colors & patterns)
-  drawBrickWallsAndFloor(ctx, originX, originY, timeTheme, roomSettings);
+  drawBrickWallsAndFloor(ctx, originX, originY, timeTheme, effectiveRoomSettings);
 
   // 1b. If in Editor / Admin mode, draw the structured isometric tile grid at the active floor level
   if (showGridOverlay) {
@@ -2937,7 +3066,7 @@ export function renderIsometricRoom(params: RenderRoomParams) {
       objects,
       hoveredTile,
       selectedTile,
-      roomSettings.gridSize,
+      effectiveRoomSettings.gridSize,
       activeBuildFloorZ
     );
   } else if (hoveredTile && !hoveredObjectId) {

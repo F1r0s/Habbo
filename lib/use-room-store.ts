@@ -345,21 +345,21 @@ class PixelAudioEngine {
   }
 
   playConsoleClick() {
-    this.playMp3('/resources/audio/cash_register.mp3', 0.3);
+    // Soft, subtle Habbo pixel UI tick (cash_register.mp3 removed)
     const ctx = this.getCtx();
     if (!ctx) return;
     const now = ctx.currentTime;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(740, now);
-    osc.frequency.exponentialRampToValueAtTime(440, now + 0.05);
-    gain.gain.setValueAtTime(0.05, now);
-    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.055);
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(520, now);
+    osc.frequency.exponentialRampToValueAtTime(380, now + 0.025);
+    gain.gain.setValueAtTime(0.015, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.028);
     osc.connect(gain);
     gain.connect(ctx.destination);
     osc.start(now);
-    osc.stop(now + 0.06);
+    osc.stop(now + 0.03);
   }
 
   playLinkOpen() {
@@ -755,13 +755,17 @@ export function useRoomStore() {
             });
           }
 
-          // Skip overwriting furniture/settings while admin is actively modifying room or floor colors
+          // Never allow an older server snapshot or heartbeat to overwrite newer local edits!
+          const serverStamp =
+            typeof data.updatedAt === 'number' ? data.updatedAt : 0;
           if (
             !data.hasCustomState ||
-            Date.now() - lastLocalMutationRef.current < 4500
+            serverStamp <= lastLocalMutationRef.current ||
+            Date.now() - lastLocalMutationRef.current < 5000
           ) {
             return;
           }
+          lastLocalMutationRef.current = serverStamp;
           if (Array.isArray(data.objects)) {
             setObjects((prev) => {
               const prevJson = JSON.stringify(prev);
@@ -841,17 +845,23 @@ export function useRoomStore() {
         window.clearTimeout(syncPostTimerRef.current);
       }
       syncPostTimerRef.current = window.setTimeout(() => {
+        const stamp = Date.now();
+        lastLocalMutationRef.current = stamp;
         fetch('/api/room', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ objects: nextObjects, projects: nextProjects }),
+          body: JSON.stringify({
+            objects: nextObjects,
+            projects: nextProjects,
+            clientUpdatedAt: stamp,
+          }),
         })
           .catch(() => {})
           .finally(() => {
             setIsSaving(false);
             setLastSavedAt(Date.now());
           });
-      }, 220);
+      }, 60);
     },
     []
   );
@@ -931,11 +941,14 @@ export function useRoomStore() {
         fetch('/api/room', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ settings: next }),
+          body: JSON.stringify({ settings: next, clientUpdatedAt: now }),
         })
           .catch(() => {})
           .finally(() => {
-            lastLocalMutationRef.current = Date.now();
+            lastLocalMutationRef.current = Math.max(
+              lastLocalMutationRef.current,
+              Date.now()
+            );
             setIsSaving(false);
             setLastSavedAt(Date.now());
           });
@@ -967,7 +980,7 @@ export function useRoomStore() {
         fetch('/api/room', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ settings: next }),
+          body: JSON.stringify({ settings: next, clientUpdatedAt: now }),
         }).catch(() => {});
         return next;
       });

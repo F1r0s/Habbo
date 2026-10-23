@@ -52,8 +52,11 @@ import {
   MIN_OBJECT_SCALE,
   MAX_OBJECT_SCALE,
   HeldDrinkType,
+  FloorPatternType,
   isDrinkDispenserType,
   resolveStaircaseTargetFloor,
+  generateFloorDeckForStaircase,
+  hitTestRoomObjectAtScreen,
   clampObjectScale,
   normalizeRotationAngle,
   angleToIsometricRotation,
@@ -242,6 +245,7 @@ export default function HabboRoomView() {
     takeDrinkFromDispenser,
     reportLocalAvatarMotion,
     updateTvPlaybackSync,
+    updateRoomSettings,
     paintManualFloorTile,
     toggleOwnerSkin,
     removeObject,
@@ -271,6 +275,11 @@ export default function HabboRoomView() {
   // Free Habbo Camera Pan & Zoom state (drag anywhere to pan, wheel/buttons to zoom)
   const cameraPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const cameraZoomRef = useRef<number>(1);
+  const lastSyncedMetricsRef = useRef<{
+    originX: number;
+    originY: number;
+    scale: number;
+  }>({ originX: 720, originY: 360, scale: 1 });
   const cameraDragRef = useRef<{
     isDown: boolean;
     hasMoved: boolean;
@@ -977,8 +986,14 @@ export default function HabboRoomView() {
 
       reportLocalAvatarMotion(sim.avatarPos.x, sim.avatarPos.y);
 
-      // Dynamically apply camera pan & zoom every frame so dragging the camera is 60-FPS smooth!
-      const activeGridNow = sim.roomSettings?.gridSize || GRID_SIZE;
+      // Dynamically apply camera pan & zoom every frame & keep HTML overlays 100% locked in sync!
+      let activeGridNow = sim.roomSettings?.gridSize || GRID_SIZE;
+      for (const o of sim.objects) {
+        if (o.x + 1 > activeGridNow) activeGridNow = o.x + 1;
+        if (o.y + 1 > activeGridNow) activeGridNow = o.y + 1;
+      }
+      activeGridNow = Math.min(28, activeGridNow);
+
       const baseSpan = activeGridNow * 64;
       const autoScale =
         sim.canvasW < baseSpan + 80
@@ -997,6 +1012,24 @@ export default function HabboRoomView() {
         (sim.canvasH / sim.scale - activeGridNow * TILE_HEIGHT) * 0.56 +
           cameraPanRef.current.y
       );
+
+      const prevM = lastSyncedMetricsRef.current;
+      if (
+        prevM.originX !== sim.originX ||
+        prevM.originY !== sim.originY ||
+        Math.abs(prevM.scale - sim.scale) > 0.002
+      ) {
+        lastSyncedMetricsRef.current = {
+          originX: sim.originX,
+          originY: sim.originY,
+          scale: sim.scale,
+        };
+        setViewportMetrics({
+          originX: sim.originX,
+          originY: sim.originY,
+          scale: sim.scale,
+        });
+      }
 
       const ctx = canvas.getContext('2d', { alpha: true });
       if (ctx) {
@@ -1134,8 +1167,12 @@ export default function HabboRoomView() {
     const localX = (clientX - rect.left) / sim.scale;
     const localY = (clientY - rect.top) / sim.scale;
 
-    // 1. Exact isometric floor tile under the pointer (supports custom manual floor tiles & multi-story z!)
-    const activeGrid = sim.roomSettings?.gridSize || GRID_SIZE;
+    let activeGrid = sim.roomSettings?.gridSize || GRID_SIZE;
+    for (const o of sim.objects) {
+      if (o.x + 1 > activeGrid) activeGrid = o.x + 1;
+      if (o.y + 1 > activeGrid) activeGrid = o.y + 1;
+    }
+
     const zOffsetPx = (sim.activeBuildFloorZ || 0) * 1.35 * 18;
     const exactGrid = screenToGrid(
       localX,
@@ -1143,8 +1180,13 @@ export default function HabboRoomView() {
       sim.originX,
       sim.originY
     );
+    const inBorderZone =
+      exactGrid.x >= -4 &&
+      exactGrid.x <= activeGrid + 6 &&
+      exactGrid.y >= -4 &&
+      exactGrid.y <= activeGrid + 6;
     const validGrid =
-      isManualFloorPaintMode ||
+      (isManualFloorPaintMode && inBorderZone) ||
       isWithinGrid(
         exactGrid.x,
         exactGrid.y,
@@ -1155,72 +1197,30 @@ export default function HabboRoomView() {
         ? exactGrid
         : null;
 
-    // 2. If the admin is in "Place Furniture on Click" mode, prioritize the floor tile directly
+    // 1. If the admin is in "Place Furniture" or "Manual Floor Paint" mode, return the target floor tile directly
     if (
       isAdminAuthenticated &&
-      isBuildDockOpen &&
-      isPlaceOnClickActive &&
+      ((isBuildDockOpen && isPlaceOnClickActive) || isManualFloorPaintMode) &&
       validGrid
     ) {
       return { tile: validGrid, obj: null };
     }
 
-    // 3. Check if the exact floor tile under the cursor has an object on it
-    if (validGrid) {
-      const sameTileObjs = sim.objects.filter(
-        (o) =>
-          o.x === validGrid.x &&
-          o.y === validGrid.y &&
-          o.type !== 'pet_dragon'
-      );
-      const nonRugSameTile = sameTileObjs.filter(
-        (o) => !o.type.startsWith('luxury_rug')
-      );
-      if (nonRugSameTile.length > 0) {
-        const topObj = nonRugSameTile.reduce(
-          (a, b) => (b.z >= a.z ? b : a),
-          nonRugSameTile[0]
-        );
-        return { tile: validGrid, obj: topObj };
-      }
+    // 2. Pixel-accurate front-to-back 2D sprite bounding-box hit test for any placed furniture!
+    const nonDragonObjs = sim.objects.filter((o) => o.type !== 'pet_dragon');
+    const hitObj = hitTestRoomObjectAtScreen(
+      localX,
+      localY,
+      nonDragonObjs,
+      sim.originX,
+      sim.originY,
+      true
+    );
+    if (hitObj) {
+      return { tile: { x: hitObj.x, y: hitObj.y }, obj: hitObj };
     }
 
-    // 4. Check tall/elevated sprites (wall screens, 3D YouTube TV, tall plants, stacked items) whose upper sprite extends above their base tile
-    const tallCandidates = [...sim.objects]
-      .filter(
-        (o) =>
-          o.type === 'youtube_tv' ||
-          o.type === 'neon_bulletin' ||
-          o.type === 'floating_screen' ||
-          o.type === 'admin_console' ||
-          o.type === 'potted_plant' ||
-          o.z > 0
-      )
-      .reverse();
-
-    for (const obj of tallCandidates) {
-      const { sx, sy } = gridToScreen(
-        obj.x,
-        obj.y,
-        obj.z,
-        sim.originX,
-        sim.originY
-      );
-      const boxTop = sy - 54;
-      const boxBottom = sy + 10;
-      const halfSpan = 24;
-
-      if (
-        localX >= sx - halfSpan &&
-        localX <= sx + halfSpan &&
-        localY >= boxTop &&
-        localY <= boxBottom
-      ) {
-        return { tile: { x: obj.x, y: obj.y }, obj };
-      }
-    }
-
-    // 5. If the exact floor tile only has a rug on it or is empty, return the floor tile for walking!
+    // 3. Fallback: if clicking a walkable floor tile (or rug), return the floor tile for walking
     if (validGrid) {
       return { tile: validGrid, obj: null };
     }
@@ -1510,7 +1510,7 @@ export default function HabboRoomView() {
               setIsConsoleModalOpen(true);
             }
           }}
-          className="block h-full w-full cursor-grab active:cursor-grabbing"
+          className="block h-full w-full touch-none cursor-grab active:cursor-grabbing"
         />
 
         {/* Live 3D Isometric Skewed YouTube TV Screen Overlay (Synchronized across all visitors!) */}
@@ -2027,6 +2027,97 @@ export default function HabboRoomView() {
                     </button>
                   </div>
 
+                  {/* In-Room Manual Floor Builder (Minecraft-Style Border Expansion + Granite & Multi-Story Levels) */}
+                  <div className="rounded border border-[#8E8E8A] bg-[#D6D6D2] px-2 py-1.5 space-y-1.5 text-[10px]">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-[#1E1E1E]">
+                        Build Floor &amp; Stairs Level:
+                      </span>
+                      <button
+                        type="button"
+                        data-testid="room-manual-floor-toggle"
+                        onClick={() => {
+                          setIsManualFloorPaintMode((prev) => {
+                            const next = !prev;
+                            if (next) setIsPlaceOnClickActive(false);
+                            return next;
+                          });
+                        }}
+                        className={`rounded-[2px] border border-black px-2 py-0.5 text-[9px] font-bold ${
+                          isManualFloorPaintMode
+                            ? 'bg-[#15803D] text-white'
+                            : 'bg-white text-black hover:bg-amber-100'
+                        }`}
+                      >
+                        {isManualFloorPaintMode
+                          ? 'Paint Floor: ON (Click Border)'
+                          : '+ Build Floor Tiles'}
+                      </button>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="text-[9px] font-bold text-[#444444]">
+                        Story:
+                      </span>
+                      <div className="flex items-center gap-1">
+                        {[
+                          { z: -1, label: 'Down (-1)' },
+                          { z: 0, label: 'Ground (0)' },
+                          { z: 1, label: 'Up (+1)' },
+                          { z: 2, label: 'Top (+2)' },
+                        ].map((lv) => (
+                          <button
+                            key={lv.z}
+                            type="button"
+                            onClick={() => setActiveBuildFloorZ(lv.z)}
+                            className={`rounded border px-1.5 py-0.5 text-[8px] font-bold ${
+                              activeBuildFloorZ === lv.z
+                                ? 'border-black bg-[#D4912A] text-white'
+                                : 'border-[#7A7A76] bg-white text-black'
+                            }`}
+                          >
+                            {lv.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-1 pt-0.5">
+                      {(
+                        [
+                          { id: 'granite_tile', label: 'Granite', col: '#64748B' },
+                          { id: 'carrara_marble', label: 'Marble', col: '#E2E8F0' },
+                          { id: 'oak_planks', label: 'Oak', col: '#DFC184' },
+                          { id: 'marble_checkers', label: 'Checkers', col: '#D6BC8B' },
+                          { id: 'zellige_mosaic', label: 'Zellige', col: '#0D9488' },
+                          { id: 'diamond_steel', label: 'Steel', col: '#475569' },
+                        ] as Array<{
+                          id: FloorPatternType;
+                          label: string;
+                          col: string;
+                        }>
+                      ).map((fp) => (
+                        <button
+                          key={fp.id}
+                          type="button"
+                          onClick={() =>
+                            updateRoomSettings({
+                              floorPattern: fp.id,
+                              floorColor: fp.col,
+                            })
+                          }
+                          className={`rounded border px-1.5 py-0.5 text-[8px] font-bold ${
+                            roomSettings.floorPattern === fp.id
+                              ? 'border-black bg-[#00748C] text-white'
+                              : 'border-[#7A7A76] bg-white text-black hover:bg-amber-50'
+                          }`}
+                        >
+                          {fp.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
                   {/* Admin Active Animals Manager inside Dock */}
                   <div className="rounded border border-[#8E8E8A] bg-[#D6D6D2] px-2 py-1.5 space-y-1">
                     <div className="flex items-center justify-between text-[10px]">
@@ -2197,6 +2288,51 @@ export default function HabboRoomView() {
                           : 'Sit Here'}
                       </span>
                     </button>
+                  ) : inspectedObject.type === 'stairs_up' ||
+                    inspectedObject.type === 'stairs_down' ? (
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        data-testid="tooltip-use-item"
+                        onClick={() => {
+                          simRef.current.pendingStairObject = inspectedObject;
+                          walkAvatarTo(
+                            inspectedObject.x,
+                            inspectedObject.y,
+                            null
+                          );
+                        }}
+                        className="inline-flex items-center gap-1 border border-black bg-[#D4912A] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#E5A23B]"
+                      >
+                        <span>
+                          {inspectedObject.type === 'stairs_up'
+                            ? 'Climb Up ▲'
+                            : 'Go Down ▼'}
+                        </span>
+                      </button>
+                      {isAdminAuthenticated && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const { targetZ } =
+                              resolveStaircaseTargetFloor(inspectedObject);
+                            const updated = generateFloorDeckForStaircase(
+                              inspectedObject,
+                              roomSettings
+                            );
+                            updateRoomSettings({
+                              customFloorTiles: updated.customFloorTiles,
+                            });
+                            setActiveBuildFloorZ(targetZ);
+                            setIsManualFloorPaintMode(true);
+                          }}
+                          className="inline-flex items-center gap-1 border border-black bg-[#15803D] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#16A34A]"
+                          title="Build walkable floor tiles at the top/bottom of this staircase"
+                        >
+                          <span>+ Build Floor</span>
+                        </button>
+                      )}
+                    </div>
                   ) : isDrinkDispenserType(inspectedObject.type) ? (
                     <button
                       type="button"
@@ -3121,24 +3257,48 @@ export default function HabboRoomView() {
             </span>
           </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              cameraPanRef.current = { x: 0, y: 0 };
-              cameraZoomRef.current = 1;
-              const sim = simRef.current;
-              setViewportMetrics({
-                originX: sim.originX,
-                originY: sim.originY,
-                scale: sim.scale,
-              });
-              pixelAudio.playConsoleClick();
-            }}
-            title="Recenter Camera (Drag anywhere on room to move camera, scroll to zoom)"
-            className="flex h-[32px] items-center gap-1 rounded-[3px] border-2 border-black bg-[#4A4745] px-2 text-[10px] font-bold text-[#E2E2DE] hover:bg-[#5C5856]"
-          >
-            <span>Center Cam</span>
-          </button>
+          <div className="flex items-center gap-0.5">
+            <button
+              type="button"
+              onClick={() => {
+                cameraZoomRef.current = Math.max(
+                  0.5,
+                  cameraZoomRef.current - 0.15
+                );
+                pixelAudio.playConsoleClick();
+              }}
+              title="Zoom Out (-)"
+              className="flex h-[32px] w-[24px] items-center justify-center rounded-l-[3px] border-2 border-black bg-[#4A4745] text-[12px] font-bold text-[#E2E2DE] hover:bg-[#5C5856]"
+            >
+              -
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                cameraPanRef.current = { x: 0, y: 0 };
+                cameraZoomRef.current = 1;
+                pixelAudio.playConsoleClick();
+              }}
+              title="Recenter Camera (Drag anywhere on room to move camera)"
+              className="flex h-[32px] items-center border-y-2 border-black bg-[#4A4745] px-1.5 text-[9px] font-bold text-[#E2E2DE] hover:bg-[#5C5856]"
+            >
+              Cam
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                cameraZoomRef.current = Math.min(
+                  1.9,
+                  cameraZoomRef.current + 0.15
+                );
+                pixelAudio.playConsoleClick();
+              }}
+              title="Zoom In (+)"
+              className="flex h-[32px] w-[24px] items-center justify-center rounded-r-[3px] border-2 border-black bg-[#4A4745] text-[12px] font-bold text-[#E2E2DE] hover:bg-[#5C5856]"
+            >
+              +
+            </button>
+          </div>
 
           <button
             type="button"
