@@ -53,6 +53,7 @@ import {
   MAX_OBJECT_SCALE,
   HeldDrinkType,
   isDrinkDispenserType,
+  resolveStaircaseTargetFloor,
   clampObjectScale,
   normalizeRotationAngle,
   angleToIsometricRotation,
@@ -241,6 +242,7 @@ export default function HabboRoomView() {
     takeDrinkFromDispenser,
     reportLocalAvatarMotion,
     updateTvPlaybackSync,
+    paintManualFloorTile,
     toggleOwnerSkin,
     removeObject,
     removePet,
@@ -262,6 +264,28 @@ export default function HabboRoomView() {
   const [usernameDraft, setUsernameDraft] = useState<string>('');
   const [perfMode, setPerfMode] = useState<'auto' | 'low' | 'high'>('auto');
   const perfModeRef = useRef<'auto' | 'low' | 'high'>('auto');
+  const [activeBuildFloorZ, setActiveBuildFloorZ] = useState<number>(0);
+  const [isManualFloorPaintMode, setIsManualFloorPaintMode] =
+    useState<boolean>(false);
+
+  // Free Habbo Camera Pan & Zoom state (drag anywhere to pan, wheel/buttons to zoom)
+  const cameraPanRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const cameraZoomRef = useRef<number>(1);
+  const cameraDragRef = useRef<{
+    isDown: boolean;
+    hasMoved: boolean;
+    startX: number;
+    startY: number;
+    initialPanX: number;
+    initialPanY: number;
+  }>({
+    isDown: false,
+    hasMoved: false,
+    startX: 0,
+    startY: 0,
+    initialPanX: 0,
+    initialPanY: 0,
+  });
 
   useEffect(() => {
     perfModeRef.current = perfMode;
@@ -369,9 +393,12 @@ export default function HabboRoomView() {
     heldDrink,
     timeTheme,
     avatarPos: { x: 4, y: 5 },
+    avatarZ: 0,
+    activeBuildFloorZ: 0,
     avatarFacing: 'sw' as IsometricRotation,
     isAvatarSitting: false,
     pendingSitObject: null as RoomObject | null,
+    pendingStairObject: null as RoomObject | null,
     pathQueue: [] as GridCoord[],
     remoteSimMap: {} as Record<
       string,
@@ -379,6 +406,7 @@ export default function HabboRoomView() {
         id: string;
         name: string;
         pos: { x: number; y: number };
+        z?: number;
         targetX: number;
         targetY: number;
         pathQueue: GridCoord[];
@@ -424,6 +452,7 @@ export default function HabboRoomView() {
     simRef.current.chatBubbles = chatBubbles;
     simRef.current.avatarAction = avatarAction;
     simRef.current.heldDrink = heldDrink;
+    simRef.current.activeBuildFloorZ = activeBuildFloorZ;
     simRef.current.timeTheme = timeTheme;
     simRef.current.visitorAvatar = useOwnerSkin ? null : visitorAvatar;
 
@@ -470,6 +499,7 @@ export default function HabboRoomView() {
     selectedFurniType,
     selectedFurniRotation,
     selectedFurniColor,
+    activeBuildFloorZ,
   ]);
 
   // Auto-remove the interaction notification tooltip after NOTIFICATION_AUTO_DISMISS_MS
@@ -546,6 +576,7 @@ export default function HabboRoomView() {
           id: rp.id,
           name: rp.name,
           pos: { x: rp.x, y: rp.y },
+          z: rp.z || 0,
           targetX: destX,
           targetY: destY,
           pathQueue: initialPath,
@@ -557,6 +588,7 @@ export default function HabboRoomView() {
         };
       } else {
         existing.name = rp.name;
+        existing.z = rp.z || 0;
         existing.action = rp.action;
         existing.heldDrink = rp.heldDrink;
         existing.visitorAvatar = visProfile;
@@ -724,15 +756,21 @@ export default function HabboRoomView() {
 
       const activeGrid = sim.roomSettings?.gridSize || GRID_SIZE;
       const baseRoomSpan = activeGrid * 64;
-      const scale =
+      const baseScale =
         w < baseRoomSpan + 80
           ? Math.max(0.48, (w - 24) / (baseRoomSpan + 40))
           : activeGrid > 12
             ? Math.max(0.75, 11.5 / activeGrid)
             : 1;
-      const originX = Math.round(w / 2 / scale);
+      const scale = Math.max(
+        0.4,
+        Math.min(2.2, baseScale * cameraZoomRef.current)
+      );
+      const originX = Math.round(w / 2 / scale + cameraPanRef.current.x);
       const roomTotalH = activeGrid * TILE_HEIGHT;
-      const originY = Math.round((h / scale - roomTotalH) * 0.56);
+      const originY = Math.round(
+        (h / scale - roomTotalH) * 0.56 + cameraPanRef.current.y
+      );
 
       sim.scale = scale;
       sim.originX = originX;
@@ -804,7 +842,36 @@ export default function HabboRoomView() {
           sim.pathQueue.shift();
           pixelAudio.playStep();
 
-          // Check if avatar finished path and should sit on a sofa/stool
+          // Check if avatar stepped onto a staircase (up or down) or finished path to sit
+          const curTileX = Math.round(sim.avatarPos.x);
+          const curTileY = Math.round(sim.avatarPos.y);
+          const stairAtStep =
+            (sim.pendingStairObject &&
+              sim.pendingStairObject.x === curTileX &&
+              sim.pendingStairObject.y === curTileY
+              ? sim.pendingStairObject
+              : null) ||
+            sim.objects.find(
+              (o) =>
+                o.x === curTileX &&
+                o.y === curTileY &&
+                (o.type === 'stairs_up' || o.type === 'stairs_down')
+            );
+
+          if (stairAtStep && sim.pathQueue.length === 0) {
+            const { landingX, landingY, targetZ } =
+              resolveStaircaseTargetFloor(stairAtStep);
+            sim.avatarPos = {
+              x: Math.max(0, landingX),
+              y: Math.max(0, landingY),
+            };
+            sim.avatarZ = targetZ;
+            sim.avatarFacing = stairAtStep.rotation;
+            sim.pendingStairObject = null;
+            setActiveBuildFloorZ(targetZ);
+            pixelAudio.playPlaceObject();
+          }
+
           if (sim.pathQueue.length === 0) {
             const sitObj =
               sim.pendingSitObject ||
@@ -824,6 +891,7 @@ export default function HabboRoomView() {
             broadcastLocalMoveRef.current({
               x: Math.round(sim.avatarPos.x),
               y: Math.round(sim.avatarPos.y),
+              z: sim.avatarZ,
               targetX: Math.round(sim.avatarPos.x),
               targetY: Math.round(sim.avatarPos.y),
               facing: sim.avatarFacing,
@@ -897,6 +965,7 @@ export default function HabboRoomView() {
           id: ra.id,
           name: ra.name,
           pos: ra.pos,
+          z: ra.z,
           facing: ra.facing,
           isWalking: ra.pathQueue.length > 0,
           isSitting: ra.isSitting,
@@ -907,6 +976,27 @@ export default function HabboRoomView() {
       });
 
       reportLocalAvatarMotion(sim.avatarPos.x, sim.avatarPos.y);
+
+      // Dynamically apply camera pan & zoom every frame so dragging the camera is 60-FPS smooth!
+      const activeGridNow = sim.roomSettings?.gridSize || GRID_SIZE;
+      const baseSpan = activeGridNow * 64;
+      const autoScale =
+        sim.canvasW < baseSpan + 80
+          ? Math.max(0.48, (sim.canvasW - 24) / (baseSpan + 40))
+          : activeGridNow > 12
+            ? Math.max(0.75, 11.5 / activeGridNow)
+            : 1;
+      sim.scale = Math.max(
+        0.38,
+        Math.min(2.2, autoScale * cameraZoomRef.current)
+      );
+      sim.originX = Math.round(
+        sim.canvasW / 2 / sim.scale + cameraPanRef.current.x
+      );
+      sim.originY = Math.round(
+        (sim.canvasH / sim.scale - activeGridNow * TILE_HEIGHT) * 0.56 +
+          cameraPanRef.current.y
+      );
 
       const ctx = canvas.getContext('2d', { alpha: true });
       if (ctx) {
@@ -923,6 +1013,7 @@ export default function HabboRoomView() {
           projects: sim.projects,
           chatBubbles: [],
           avatarPos: sim.avatarPos,
+          avatarZ: sim.avatarZ,
           avatarFacing: sim.avatarFacing,
           isAvatarWalking: sim.pathQueue.length > 0,
           isAvatarSitting: sim.isAvatarSitting,
@@ -931,11 +1022,12 @@ export default function HabboRoomView() {
           selectedObjectId: sim.selectedObjectId,
           tick: sim.tick,
           timeTheme: sim.timeTheme,
-          showGridOverlay: Boolean(sim.ghostObject),
+          showGridOverlay: Boolean(sim.ghostObject) || isManualFloorPaintMode,
           ghostObject: sim.ghostObject,
           hideStaticAnimals: true,
           visitorAvatar: sim.visitorAvatar,
           roomSettings: sim.roomSettings,
+          activeBuildFloorZ: sim.activeBuildFloorZ,
           avatarAction: sim.avatarAction,
           heldDrink: sim.heldDrink,
           remoteAvatars: remoteAvatarsList,
@@ -1042,12 +1134,26 @@ export default function HabboRoomView() {
     const localX = (clientX - rect.left) / sim.scale;
     const localY = (clientY - rect.top) / sim.scale;
 
-    // 1. Exact isometric floor tile under the pointer (supports expanded 10x10..16x16 room)
+    // 1. Exact isometric floor tile under the pointer (supports custom manual floor tiles & multi-story z!)
     const activeGrid = sim.roomSettings?.gridSize || GRID_SIZE;
-    const exactGrid = screenToGrid(localX, localY, sim.originX, sim.originY);
-    const validGrid = isWithinGrid(exactGrid.x, exactGrid.y, activeGrid)
-      ? exactGrid
-      : null;
+    const zOffsetPx = (sim.activeBuildFloorZ || 0) * 1.35 * 18;
+    const exactGrid = screenToGrid(
+      localX,
+      localY + zOffsetPx,
+      sim.originX,
+      sim.originY
+    );
+    const validGrid =
+      isManualFloorPaintMode ||
+      isWithinGrid(
+        exactGrid.x,
+        exactGrid.y,
+        activeGrid,
+        sim.roomSettings?.customFloorTiles,
+        sim.roomSettings?.removedBaseTiles
+      )
+        ? exactGrid
+        : null;
 
     // 2. If the admin is in "Place Furniture on Click" mode, prioritize the floor tile directly
     if (
@@ -1122,15 +1228,63 @@ export default function HabboRoomView() {
     return { tile: null, obj: null };
   };
 
+  const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+    cameraDragRef.current = {
+      isDown: true,
+      hasMoved: false,
+      startX: e.clientX,
+      startY: e.clientY,
+      initialPanX: cameraPanRef.current.x,
+      initialPanY: cameraPanRef.current.y,
+    };
+  };
+
   const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    const { tile, obj } = resolvePointerTarget(e.clientX, e.clientY);
+    const drag = cameraDragRef.current;
     const sim = simRef.current;
+    if (drag.isDown) {
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      if (Math.hypot(dx, dy) > 6) {
+        drag.hasMoved = true;
+        cameraPanRef.current = {
+          x: drag.initialPanX + dx / sim.scale,
+          y: drag.initialPanY + dy / sim.scale,
+        };
+        setViewportMetrics({
+          originX: sim.originX,
+          originY: sim.originY,
+          scale: sim.scale,
+        });
+        return;
+      }
+    }
+
+    const { tile, obj } = resolvePointerTarget(e.clientX, e.clientY);
     sim.hoveredTile = tile;
     sim.hoveredObjectId = obj ? obj.id : null;
     setHoveredGridTile((prev) => {
       if (!tile && !prev) return null;
       if (tile && prev && tile.x === prev.x && tile.y === prev.y) return prev;
       return tile;
+    });
+  };
+
+  const handlePointerUp = () => {
+    cameraDragRef.current.isDown = false;
+  };
+
+  const handleWheelZoom = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    const delta = e.deltaY < 0 ? 0.1 : -0.1;
+    cameraZoomRef.current = Math.max(
+      0.5,
+      Math.min(1.9, cameraZoomRef.current + delta)
+    );
+    const sim = simRef.current;
+    setViewportMetrics({
+      originX: sim.originX,
+      originY: sim.originY,
+      scale: sim.scale,
     });
   };
 
@@ -1168,9 +1322,26 @@ export default function HabboRoomView() {
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     ensureAmbientMusicStarted();
+    // If user dragged the camera, do not treat mouse-up as a tile click
+    if (cameraDragRef.current.hasMoved) {
+      cameraDragRef.current.hasMoved = false;
+      return;
+    }
 
     const { tile, obj } = resolvePointerTarget(e.clientX, e.clientY);
     if (!tile) return;
+
+    // If Admin is in Manual Floor Paint Mode, add a floor tile at (tile.x, tile.y, activeBuildFloorZ)
+    if (isAdminAuthenticated && isManualFloorPaintMode) {
+      paintManualFloorTile(
+        tile.x,
+        tile.y,
+        activeBuildFloorZ,
+        e.shiftKey ? 'remove' : 'add',
+        roomSettings.floorColor
+      );
+      return;
+    }
 
     // If Admin is in Place Furniture mode, place the selected item onto the clicked grid tile
     if (isAdminAuthenticated && isBuildDockOpen && isPlaceOnClickActive) {
@@ -1198,6 +1369,21 @@ export default function HabboRoomView() {
     if (obj.type === 'white_sofa' || obj.type === 'wood_stool') {
       walkAvatarTo(obj.x, obj.y, obj);
       pushChatBubble(activeSpeakerName, '*sits down comfortably*', 'avatar');
+      return;
+    }
+
+    // 1a. Functional Staircase Up / Down -> Walk to the staircase and climb up or go down a floor!
+    if (obj.type === 'stairs_up' || obj.type === 'stairs_down') {
+      simRef.current.pendingStairObject = obj;
+      walkAvatarTo(obj.x, obj.y, null);
+      const { targetZ } = resolveStaircaseTargetFloor(obj);
+      pushChatBubble(
+        activeSpeakerName,
+        obj.type === 'stairs_up'
+          ? `*climbs up the staircase to Floor +${targetZ}!*`
+          : `*walks down the staircase to Floor ${targetZ}!*`,
+        'avatar'
+      );
       return;
     }
 
@@ -1312,7 +1498,10 @@ export default function HabboRoomView() {
           data-testid="isometric-room-canvas"
           aria-label="Isometric 2D Habbo Hotel pixel art portfolio room"
           style={{ imageRendering: 'pixelated' }}
+          onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onWheel={handleWheelZoom}
           onClick={handleCanvasClick}
           onDoubleClick={(e) => {
             const { obj } = resolvePointerTarget(e.clientX, e.clientY);
@@ -1321,7 +1510,7 @@ export default function HabboRoomView() {
               setIsConsoleModalOpen(true);
             }
           }}
-          className="block h-full w-full cursor-pointer"
+          className="block h-full w-full cursor-grab active:cursor-grabbing"
         />
 
         {/* Live 3D Isometric Skewed YouTube TV Screen Overlay (Synchronized across all visitors!) */}
@@ -2604,9 +2793,13 @@ export default function HabboRoomView() {
                   <span className="font-bold">Owner:</span> Higma
                 </div>
                 <div>
+                  <span className="font-bold text-[#D97706]">Music:</span>{' '}
+                  Original Instrumental Created by Higma 🎸
+                </div>
+                <div>
                   <span className="font-bold">Floor Space:</span>{' '}
-                  {roomSettings.gridSize}×{roomSettings.gridSize} (
-                  {roomSettings.gridSize * roomSettings.gridSize} tiles)
+                  {roomSettings.gridSize}×{roomSettings.gridSize} +{' '}
+                  {(roomSettings.customFloorTiles || []).length} custom tiles
                 </div>
                 <div>
                   <span className="font-bold">Furni Count:</span>{' '}
@@ -2930,24 +3123,21 @@ export default function HabboRoomView() {
 
           <button
             type="button"
-            onClick={(e) => {
-              toggleAmbientMusic();
-              e.currentTarget.blur();
+            onClick={() => {
+              cameraPanRef.current = { x: 0, y: 0 };
+              cameraZoomRef.current = 1;
+              const sim = simRef.current;
+              setViewportMetrics({
+                originX: sim.originX,
+                originY: sim.originY,
+                scale: sim.scale,
+              });
+              pixelAudio.playConsoleClick();
             }}
-            aria-label={
-              isMusicPlaying
-                ? 'Pause Habbo ambient music'
-                : 'Play Habbo ambient music'
-            }
-            title="Toggle Habbo Lounge BGM"
-            className={`flex h-[32px] items-center gap-1 rounded-[3px] border-2 border-black px-2 text-[10px] font-bold ${
-              isMusicPlaying && !isMuted
-                ? 'bg-[#D4912A] text-white shadow-[inset_0_1px_0_#F2C166]'
-                : 'bg-[#4A4745] text-[#E2E2DE] hover:bg-[#5C5856]'
-            }`}
+            title="Recenter Camera (Drag anywhere on room to move camera, scroll to zoom)"
+            className="flex h-[32px] items-center gap-1 rounded-[3px] border-2 border-black bg-[#4A4745] px-2 text-[10px] font-bold text-[#E2E2DE] hover:bg-[#5C5856]"
           >
-            <Music className="h-3 w-3" />
-            <span className="hidden sm:inline">BGM</span>
+            <span>Center Cam</span>
           </button>
 
           <button
@@ -2956,8 +3146,12 @@ export default function HabboRoomView() {
               toggleMute();
               e.currentTarget.blur();
             }}
-            aria-label={isMuted ? 'Unmute sound effects' : 'Mute sound effects'}
-            title={isMuted ? 'Sound Muted (M)' : 'Sound Active (M)'}
+            aria-label={isMuted ? 'Unmute volume' : 'Mute volume'}
+            title={
+              isMuted
+                ? 'Volume Muted (M) · Original Music by Higma'
+                : 'Volume Active (M) · Original Music by Higma'
+            }
             className="flex h-[32px] w-[32px] items-center justify-center rounded-[3px] border-2 border-black bg-[#4A4745] text-[#E2E2DE] hover:bg-[#5C5856]"
           >
             {isMuted ? (

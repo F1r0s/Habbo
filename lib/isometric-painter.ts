@@ -131,6 +131,7 @@ export interface RenderRoomParams {
   projects: ProjectLink[];
   chatBubbles: ChatBubble[];
   avatarPos: { x: number; y: number };
+  avatarZ?: number;
   avatarFacing: IsometricRotation;
   isAvatarWalking: boolean;
   isAvatarSitting?: boolean;
@@ -145,6 +146,7 @@ export interface RenderRoomParams {
   hideStaticAnimals?: boolean;
   visitorAvatar?: VisitorAvatarProfile | null;
   roomSettings?: RoomSettings;
+  activeBuildFloorZ?: number;
   avatarAction?: 'none' | 'wave' | 'dance';
   heldDrink?: HeldDrinkType;
   remoteAvatars?: RenderedRemoteAvatar[];
@@ -154,6 +156,7 @@ export interface RenderedRemoteAvatar {
   id: string;
   name: string;
   pos: { x: number; y: number };
+  z?: number;
   facing: IsometricRotation;
   isWalking: boolean;
   isSitting: boolean;
@@ -680,6 +683,72 @@ function drawBrickWallsAndFloor(
   ctx.strokeStyle = '#000000';
   ctx.lineWidth = 1;
   ctx.stroke();
+
+  // --- 5. REMOVED BASE TILES (Manual Floor Cutouts) ---
+  if (
+    roomSettings.removedBaseTiles &&
+    roomSettings.removedBaseTiles.length > 0
+  ) {
+    for (const key of roomSettings.removedBaseTiles) {
+      const [rxStr, ryStr] = key.split(',');
+      const rx = Number(rxStr);
+      const ry = Number(ryStr);
+      if (!Number.isNaN(rx) && !Number.isNaN(ry)) {
+        const { sx, sy } = gridToScreen(rx, ry, 0, originX, originY);
+        drawIsoDiamond(
+          ctx,
+          sx,
+          sy,
+          TILE_WIDTH,
+          TILE_HEIGHT,
+          '#050508',
+          '#000000',
+          1.5
+        );
+      }
+    }
+  }
+
+  // --- 6. MANUALLY BUILT & MULTI-STORY FLOOR TILES (Ground Extensions, Upstairs & Downstairs) ---
+  if (
+    roomSettings.customFloorTiles &&
+    roomSettings.customFloorTiles.length > 0
+  ) {
+    const sortedTiles = [...roomSettings.customFloorTiles].sort((a, b) => {
+      if (a.z !== b.z) return a.z - b.z;
+      return a.x + a.y - (b.x + b.y);
+    });
+    for (const tile of sortedTiles) {
+      const tileZ = (tile.z || 0) * 1.35;
+      const { sx, sy } = gridToScreen(tile.x, tile.y, tileZ, originX, originY);
+      const tCol = tile.color || baseFloorFill;
+      const tLeft = shadeHexColor(tCol, 0.8);
+      const tRight = shadeHexColor(tCol, 0.66);
+
+      // If elevated upper story (z > 0), draw subtle corner support columns down toward floor
+      if (tile.z > 0) {
+        ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy + TILE_HEIGHT);
+        ctx.lineTo(sx, sy + TILE_HEIGHT + tile.z * 24);
+        ctx.stroke();
+      }
+
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + slabH,
+        TILE_WIDTH,
+        TILE_HEIGHT,
+        slabH,
+        tCol,
+        tLeft,
+        tRight,
+        '#000000'
+      );
+    }
+  }
 }
 
 /**
@@ -1881,12 +1950,14 @@ function drawEditorGridOverlay(
   _objects: RoomObject[],
   hoveredTile: GridCoord | null,
   selectedTile: GridCoord | null,
-  gridSize: number = GRID_SIZE
+  gridSize: number = GRID_SIZE,
+  floorZ: number = 0
 ) {
   ctx.save();
+  const zElev = floorZ * 1.35;
   for (let y = 0; y < gridSize; y++) {
     for (let x = 0; x < gridSize; x++) {
-      const { sx, sy } = gridToScreen(x, y, 0, originX, originY);
+      const { sx, sy } = gridToScreen(x, y, zElev, originX, originY);
       const isHovered = hoveredTile?.x === x && hoveredTile?.y === y;
       const isSelected = selectedTile?.x === x && selectedTile?.y === y;
 
@@ -2478,12 +2549,14 @@ function drawHabboAvatar(
   avatarShadowAlpha: number,
   visitorAvatar?: VisitorAvatarProfile | null,
   avatarAction: 'none' | 'wave' | 'dance' = 'none',
-  heldDrink: HeldDrinkType = 'none'
+  heldDrink: HeldDrinkType = 'none',
+  avatarZ: number = 0
 ) {
+  const effectiveZ = avatarZ * 1.35 + (isSitting ? 0 : 0.2);
   const { sx, sy } = gridToScreen(
     avatarPos.x,
     avatarPos.y,
-    isSitting ? 0 : 0.2,
+    effectiveZ,
     originX,
     originY
   );
@@ -2828,6 +2901,7 @@ export function renderIsometricRoom(params: RenderRoomParams) {
     projects,
     chatBubbles,
     avatarPos,
+    avatarZ = 0,
     avatarFacing,
     isAvatarWalking,
     isAvatarSitting = false,
@@ -2842,6 +2916,7 @@ export function renderIsometricRoom(params: RenderRoomParams) {
     hideStaticAnimals = false,
     visitorAvatar = null,
     roomSettings = DEFAULT_ROOM_SETTINGS,
+    activeBuildFloorZ = 0,
     avatarAction = 'none',
     heldDrink = 'none',
     remoteAvatars = [],
@@ -2853,7 +2928,7 @@ export function renderIsometricRoom(params: RenderRoomParams) {
   // 1. Draw cutaway walls and floor with custom RoomSettings (gridSize, wall/floor colors & patterns)
   drawBrickWallsAndFloor(ctx, originX, originY, timeTheme, roomSettings);
 
-  // 1b. If in Editor / Admin mode, draw the structured isometric tile grid
+  // 1b. If in Editor / Admin mode, draw the structured isometric tile grid at the active floor level
   if (showGridOverlay) {
     drawEditorGridOverlay(
       ctx,
@@ -2862,7 +2937,8 @@ export function renderIsometricRoom(params: RenderRoomParams) {
       objects,
       hoveredTile,
       selectedTile,
-      roomSettings.gridSize
+      roomSettings.gridSize,
+      activeBuildFloorZ
     );
   } else if (hoveredTile && !hoveredObjectId) {
     const { sx, sy } = gridToScreen(
@@ -2890,23 +2966,31 @@ export function renderIsometricRoom(params: RenderRoomParams) {
   const allAvatarsToDraw = [
     {
       pos: avatarPos,
+      z: avatarZ,
       facing: avatarFacing,
       isWalking: isAvatarWalking,
       isSitting: isAvatarSitting,
       action: avatarAction,
       heldDrink,
       visitorAvatar,
-      depth: (avatarPos.x + avatarPos.y) * 100 + (isAvatarSitting ? 55 : 25),
+      depth:
+        (avatarPos.x + avatarPos.y) * 100 +
+        avatarZ * 15 +
+        (isAvatarSitting ? 55 : 25),
     },
     ...remoteAvatars.map((ra) => ({
       pos: ra.pos,
+      z: ra.z || 0,
       facing: ra.facing,
       isWalking: ra.isWalking,
       isSitting: ra.isSitting,
       action: ra.action,
       heldDrink: ra.heldDrink || ('none' as HeldDrinkType),
       visitorAvatar: ra.visitorAvatar,
-      depth: (ra.pos.x + ra.pos.y) * 100 + (ra.isSitting ? 55 : 25),
+      depth:
+        (ra.pos.x + ra.pos.y) * 100 +
+        (ra.z || 0) * 15 +
+        (ra.isSitting ? 55 : 25),
     })),
   ].sort((a, b) => a.depth - b.depth);
 
@@ -2936,7 +3020,8 @@ export function renderIsometricRoom(params: RenderRoomParams) {
         timeTheme.avatarShadowAlpha,
         av.visitorAvatar,
         av.action,
-        av.heldDrink
+        av.heldDrink,
+        av.z
       );
       nextAvatarIdx += 1;
     }
@@ -2968,7 +3053,8 @@ export function renderIsometricRoom(params: RenderRoomParams) {
       timeTheme.avatarShadowAlpha,
       av.visitorAvatar,
       av.action,
-      av.heldDrink
+      av.heldDrink,
+      av.z
     );
     nextAvatarIdx += 1;
   }

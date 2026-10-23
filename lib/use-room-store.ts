@@ -24,6 +24,9 @@ import {
     TvPlaybackSyncState,
     DEFAULT_YOUTUBE_VIDEO_URL,
     sanitizeRoomSettings,
+    resolveStaircaseTargetFloor,
+    toggleManualFloorTile,
+    generateFloorDeckForStaircase,
     pruneStalePlayers,
     isWallPosterType,
     isDrinkDispenserType,
@@ -163,10 +166,10 @@ class PixelAudioEngine {
       const step = this.stepIdx % 8;
       const cycleBar = Math.floor(this.stepIdx / 8);
       const harmony = progression[bar];
-      // First 2 bars are pure acoustic/electric guitar intro, then 808 + trap drums drop in!
-      const drumsActive = cycleBar >= 2;
+      // Alternating pure guitar/pad instrumental sections (0:00-0:28 & 3:37-4:14 vibe) with gentle 808 pulse — 100% instrumental (no vocals)
+      const drumsActive = cycleBar % 6 >= 2 && cycleBar % 6 <= 4;
 
-      // 1. Plucked Melancholic Guitar Arpeggio on every step
+      // 1. Warm Plucked Acoustic/Electric Guitar Arpeggio on every step (Original Instrumental by Higma)
       const gFreq = harmony.guitarArp[step % harmony.guitarArp.length];
       const gOsc = ctx.createOscillator();
       const gOsc2 = ctx.createOscillator();
@@ -174,16 +177,30 @@ class PixelAudioEngine {
       gOsc.type = 'triangle';
       gOsc2.type = 'sine';
       gOsc.frequency.setValueAtTime(gFreq, now);
-      gOsc2.frequency.setValueAtTime(gFreq * 2, now);
-      gGain.gain.setValueAtTime(0.028, now);
-      gGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.42);
+      gOsc2.frequency.setValueAtTime(gFreq * 1.5, now);
+      gGain.gain.setValueAtTime(0.032, now);
+      gGain.gain.exponentialRampToValueAtTime(0.0008, now + 0.52);
       gOsc.connect(gGain);
       gOsc2.connect(gGain);
       gGain.connect(ctx.destination);
       gOsc.start(now);
       gOsc2.start(now);
-      gOsc.stop(now + 0.44);
-      gOsc2.stop(now + 0.44);
+      gOsc.stop(now + 0.55);
+      gOsc2.stop(now + 0.55);
+
+      // Warm ambient pad chord swell on step 0 of each bar (like the 3:40 outro pad)
+      if (step === 0) {
+        const padOsc = ctx.createOscillator();
+        const padGain = ctx.createGain();
+        padOsc.type = 'sine';
+        padOsc.frequency.setValueAtTime(harmony.sub808 * 2, now);
+        padGain.gain.setValueAtTime(0.022, now);
+        padGain.gain.exponentialRampToValueAtTime(0.0008, now + 1.6);
+        padOsc.connect(padGain);
+        padGain.connect(ctx.destination);
+        padOsc.start(now);
+        padOsc.stop(now + 1.65);
+      }
 
       if (drumsActive) {
         // 2. Deep 808 Sub-Bass + Kick Punch on steps 0, 3, 6
@@ -415,6 +432,7 @@ export function useRoomStore() {
   const localCoordsRef = useRef<{
     x: number;
     y: number;
+    z: number;
     targetX: number;
     targetY: number;
     facing: IsometricRotation;
@@ -422,6 +440,7 @@ export function useRoomStore() {
   }>({
     x: 4,
     y: 5,
+    z: 0,
     targetX: 4,
     targetY: 5,
     facing: 'sw',
@@ -589,6 +608,7 @@ export function useRoomStore() {
       overrides?: Partial<{
         x: number;
         y: number;
+        z: number;
         targetX: number;
         targetY: number;
         facing: IsometricRotation;
@@ -609,6 +629,7 @@ export function useRoomStore() {
         isOwner: effOwner,
         x: overrides?.x ?? c.x,
         y: overrides?.y ?? c.y,
+        z: overrides?.z ?? c.z,
         targetX: overrides?.targetX ?? c.targetX,
         targetY: overrides?.targetY ?? c.targetY,
         facing: overrides?.facing ?? c.facing,
@@ -734,10 +755,10 @@ export function useRoomStore() {
             });
           }
 
-          // Skip overwriting furniture/settings while admin is actively dragging sliders
+          // Skip overwriting furniture/settings while admin is actively modifying room or floor colors
           if (
             !data.hasCustomState ||
-            Date.now() - lastLocalMutationRef.current < 2500
+            Date.now() - lastLocalMutationRef.current < 4500
           ) {
             return;
           }
@@ -901,6 +922,12 @@ export function useRoomStore() {
             JSON.stringify(next)
           );
         } catch {}
+        try {
+          broadcastChannelRef.current?.postMessage({
+            type: 'settings',
+            settings: next,
+          });
+        } catch {}
         fetch('/api/room', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -908,11 +935,43 @@ export function useRoomStore() {
         })
           .catch(() => {})
           .finally(() => {
+            lastLocalMutationRef.current = Date.now();
             setIsSaving(false);
             setLastSavedAt(Date.now());
           });
         return next;
       });
+    },
+    []
+  );
+
+  const paintManualFloorTile = useCallback(
+    (
+      x: number,
+      y: number,
+      z: number,
+      mode: 'add' | 'remove',
+      color?: string
+    ) => {
+      const now = Date.now();
+      lastLocalMutationRef.current = now;
+      setLastSavedAt(now);
+      setRoomSettings((prev) => {
+        const next = toggleManualFloorTile(prev, x, y, z, mode, color);
+        try {
+          window.localStorage.setItem(
+            STORAGE_KEY_ROOM_SETTINGS,
+            JSON.stringify(next)
+          );
+        } catch {}
+        fetch('/api/room', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ settings: next }),
+        }).catch(() => {});
+        return next;
+      });
+      pixelAudio.playPlaceObject();
     },
     []
   );
@@ -961,22 +1020,29 @@ export function useRoomStore() {
       setObjects(next);
       persistState(next, projects);
 
-      if (input.consumeInventoryItemId) {
-        setInventory((prev) => {
-          const nextInv = removeInventoryItemById(
-            prev,
-            input.consumeInventoryItemId!,
-            1
-          );
-          persistInventory(nextInv);
-          return nextInv;
+      // If placing a staircase (up or down), automatically build a walkable landing floor deck at that elevation!
+      if (placed.type === 'stairs_up' || placed.type === 'stairs_down') {
+        setRoomSettings((prev) => {
+          const withDeck = generateFloorDeckForStaircase(placed, prev);
+          try {
+            window.localStorage.setItem(
+              STORAGE_KEY_ROOM_SETTINGS,
+              JSON.stringify(withDeck)
+            );
+          } catch {}
+          fetch('/api/room', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ settings: withDeck }),
+          }).catch(() => {});
+          return withDeck;
         });
       }
 
       pixelAudio.playPlaceObject();
       return placed;
     },
-    [objects, projects, persistState, persistInventory]
+    [objects, projects, persistState]
   );
 
   const updateObjectVideoUrl = useCallback(
@@ -998,6 +1064,7 @@ export function useRoomStore() {
     (update: {
       x: number;
       y: number;
+      z?: number;
       targetX: number;
       targetY: number;
       facing: IsometricRotation;
@@ -1007,6 +1074,7 @@ export function useRoomStore() {
       localCoordsRef.current = {
         x: update.x,
         y: update.y,
+        z: typeof update.z === 'number' ? update.z : localCoordsRef.current.z,
         targetX: update.targetX,
         targetY: update.targetY,
         facing: update.facing,
@@ -1015,6 +1083,7 @@ export function useRoomStore() {
       const presence = buildLocalPresence({
         x: update.x,
         y: update.y,
+        z: localCoordsRef.current.z,
         targetX: update.targetX,
         targetY: update.targetY,
         facing: update.facing,
@@ -1846,6 +1915,7 @@ export function useRoomStore() {
     updateTvPlaybackSync,
     setCustomBgmAudio,
     updateRoomSettings,
+    paintManualFloorTile,
     toggleOwnerSkin,
     addProjectLink,
     resetRoomToDefault,

@@ -56,6 +56,7 @@ import {
   MAX_OBJECT_SCALE,
   DEFAULT_POSTER_IMAGES,
   isWallPosterType,
+  generateFloorDeckForStaircase,
 } from '@/lib/room-engine';
 import {
   renderIsometricRoom,
@@ -286,6 +287,7 @@ export default function AdminDashboard() {
     customBgmUrl,
     setCustomBgmAudio,
     updateRoomSettings,
+    paintManualFloorTile,
     updateObjectVideoUrl,
     resetRoomToDefault,
     applyOrganizedPreset,
@@ -307,10 +309,35 @@ export default function AdminDashboard() {
   const [dropHoverTile, setDropHoverTile] = useState<GridCoord | null>(null);
   const [canvasHoverTile, setCanvasHoverTile] = useState<GridCoord | null>(null);
 
-  // Placement settings
+  // Placement, Manual Selection & Manual Floor Builder settings
   const [placementMode, setPlacementMode] = useState<PlacementMode>('replace');
-  const [clickToPlaceMode, setClickToPlaceMode] = useState<boolean>(true);
+  const [clickToPlaceMode, setClickToPlaceMode] = useState<boolean>(false);
+  const [manualFloorTool, setManualFloorTool] = useState<
+    'none' | 'add_floor' | 'remove_floor'
+  >('none');
+  const [activeBuildFloorZ, setActiveBuildFloorZ] = useState<number>(0);
   const [showGridOverlay, setShowGridOverlay] = useState<boolean>(true);
+
+  // Free Camera Pan & Zoom in /admin
+  const [adminCameraPan, setAdminCameraPan] = useState<{ x: number; y: number }>(
+    { x: 0, y: 0 }
+  );
+  const [adminCameraZoom, setAdminCameraZoom] = useState<number>(1);
+  const adminCamDragRef = useRef<{
+    isDown: boolean;
+    hasMoved: boolean;
+    startX: number;
+    startY: number;
+    initPanX: number;
+    initPanY: number;
+  }>({
+    isDown: false,
+    hasMoved: false,
+    startX: 0,
+    startY: 0,
+    initPanX: 0,
+    initPanY: 0,
+  });
 
   // Inventory, Pre-Placement Stack & Room Architecture Mode State
   const [warehouseTab, setWarehouseTab] = useState<
@@ -468,8 +495,8 @@ export default function AdminDashboard() {
   const activeGridSize = roomSettings.gridSize || GRID_SIZE;
   const dynamicCanvasW = Math.max(LOGICAL_CANVAS_W, activeGridSize * 68 + 80);
   const dynamicCanvasH = Math.max(LOGICAL_CANVAS_H, activeGridSize * 36 + 160);
-  const dynamicOriginX = Math.round(dynamicCanvasW / 2);
-  const dynamicOriginY = LOGICAL_ORIGIN_Y;
+  const dynamicOriginX = Math.round(dynamicCanvasW / 2 + adminCameraPan.x);
+  const dynamicOriginY = Math.round(LOGICAL_ORIGIN_Y + adminCameraPan.y);
 
   // Render the live interactive isometric room on the right side
   useEffect(() => {
@@ -528,6 +555,7 @@ export default function AdminDashboard() {
       ghostObject,
       hideStaticAnimals: pets.length === 0,
       roomSettings,
+      activeBuildFloorZ,
     });
     ctx.restore();
   }, [
@@ -558,6 +586,7 @@ export default function AdminDashboard() {
     showGridOverlay,
     useStackBrush,
     inventoryStack,
+    activeBuildFloorZ,
   ]);
 
   const handlePasscodeSubmit = (e: React.FormEvent) => {
@@ -709,13 +738,43 @@ export default function AdminDashboard() {
     });
   };
 
+  const handleCanvasMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    adminCamDragRef.current = {
+      isDown: true,
+      hasMoved: false,
+      startX: e.clientX,
+      startY: e.clientY,
+      initPanX: adminCameraPan.x,
+      initPanY: adminCameraPan.y,
+    };
+  };
+
   const handleCanvasMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const drag = adminCamDragRef.current;
+    if (drag.isDown) {
+      const dx = e.clientX - drag.startX;
+      const dy = e.clientY - drag.startY;
+      if (Math.hypot(dx, dy) > 6) {
+        drag.hasMoved = true;
+        const invScale = canvasDisplayScale > 0 ? 1 / canvasDisplayScale : 1;
+        setAdminCameraPan({
+          x: Math.round(drag.initPanX + dx * invScale),
+          y: Math.round(drag.initPanY + dy * invScale),
+        });
+        return;
+      }
+    }
+
     const tile = resolveTileFromPointer(e.clientX, e.clientY);
     setCanvasHoverTile((prev) => {
       if (!tile && !prev) return null;
       if (tile && prev && tile.x === prev.x && tile.y === prev.y) return prev;
       return tile;
     });
+  };
+
+  const handleCanvasMouseUp = () => {
+    adminCamDragRef.current.isDown = false;
   };
 
   const handleCanvasDragOver = (e: React.DragEvent<HTMLCanvasElement>) => {
@@ -754,12 +813,43 @@ export default function AdminDashboard() {
   };
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (adminCamDragRef.current.hasMoved) {
+      adminCamDragRef.current.hasMoved = false;
+      return;
+    }
+
     const tile = resolveTileFromPointer(e.clientX, e.clientY);
-    if (!tile) return;
+    if (!tile) {
+      setSelectedPlacedObjectId(null);
+      return;
+    }
 
     setCoordX(tile.x);
     setCoordY(tile.y);
 
+    // 1. Manual Floor Builder Mode: Add or Remove Floor Tile one-by-one at activeBuildFloorZ!
+    if (manualFloorTool === 'add_floor') {
+      paintManualFloorTile(
+        tile.x,
+        tile.y,
+        activeBuildFloorZ,
+        'add',
+        roomSettings.floorColor
+      );
+      setStatusToast(
+        `Built floor tile at (${tile.x}, ${tile.y}, Floor ${activeBuildFloorZ >= 0 ? `+${activeBuildFloorZ}` : activeBuildFloorZ}) · Auto-saved!`
+      );
+      return;
+    }
+    if (manualFloorTool === 'remove_floor') {
+      paintManualFloorTile(tile.x, tile.y, activeBuildFloorZ, 'remove');
+      setStatusToast(
+        `Removed floor tile at (${tile.x}, ${tile.y}, Floor ${activeBuildFloorZ}) · Auto-saved!`
+      );
+      return;
+    }
+
+    // 2. Click-to-Place Furni Mode vs One-by-One Manual Select Mode
     if (clickToPlaceMode) {
       placeFurnitureAtTile(
         {
@@ -777,7 +867,18 @@ export default function AdminDashboard() {
       );
     } else {
       const topObj = getTopObjectAtTile(tile.x, tile.y, objects);
-      setSelectedPlacedObjectId(topObj ? topObj.id : null);
+      if (topObj) {
+        setSelectedPlacedObjectId((prev) =>
+          prev === topObj.id ? null : topObj.id
+        );
+        setObjectScale(clampObjectScale(topObj.scale));
+        setRotation(topObj.rotation);
+        setRotationAngle(
+          normalizeRotationAngle(topObj.rotationAngle, topObj.rotation)
+        );
+      } else {
+        setSelectedPlacedObjectId(null);
+      }
       pixelAudio.playConsoleClick();
     }
   };
@@ -824,10 +925,10 @@ export default function AdminDashboard() {
     (item) => item.id === selectedInventoryItemId
   );
 
-  // Currently selected placed object on the floor (for quick move/rotate/scale/pick-up)
-  const activeFloorObj =
-    objects.find((o) => o.id === selectedPlacedObjectId) ||
-    getTopObjectAtTile(coordX, coordY, objects);
+  // Strictly only show the selected object when manually selected one-by-one! If nothing is selected, show nothing!
+  const activeFloorObj = selectedPlacedObjectId
+    ? objects.find((o) => o.id === selectedPlacedObjectId) || null
+    : null;
 
   const handleScaleChange = (rawScale: number, applyToFloor = true) => {
     const clamped = clampObjectScale(rawScale);
@@ -1109,31 +1210,25 @@ export default function AdminDashboard() {
 
           <div className="min-w-0 flex-1">
             <div className="text-[15px] font-bold leading-tight text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.8)]">
-              Warehouse &amp; Inventory Studio
+              Higma&apos;s Home Studio
             </div>
             <div className="mt-0.5 text-[11px] leading-snug text-[#CCCCCC]">
-              Inventory Stock:{' '}
+              Home Inventory:{' '}
               <span
                 className="font-bold text-[#34D399]"
                 data-testid="metric-inventory-units"
               >
-                {totalInventoryUnits} items ({inventory.length} slots)
+                ∞ Unlimited
               </span>
             </div>
             <div className="text-[11px] leading-snug text-[#CCCCCC]">
-              Placed in Room:{' '}
+              Room Capacity:{' '}
               <span
-                className="font-bold text-[#F37021]"
+                className="font-bold text-[#FACC15]"
                 data-testid="metric-total-objects"
               >
-                {objects.length}
+                ∞ Unlimited Home
               </span>
-              <span className="font-bold text-[#F37021]">/100</span>
-              {inventoryStack.length > 0 && (
-                <span className="ml-2 rounded bg-[#00748C] px-1.5 py-0.5 text-[9px] font-bold text-white">
-                  Stack Ready ({inventoryStack.length})
-                </span>
-              )}
             </div>
           </div>
         </div>
@@ -1355,7 +1450,7 @@ export default function AdminDashboard() {
                   }`}
                 >
                   <Package className="h-3 w-3 text-[#FACC15]" />
-                  <span>Inventory ({inventory.length})</span>
+                  <span>Inventory (∞)</span>
                 </button>
                 <button
                   type="button"
@@ -1373,7 +1468,7 @@ export default function AdminDashboard() {
                   }`}
                 >
                   <Layers className="h-3 w-3 text-[#38BDF8]" />
-                  <span>Stack ({inventoryStack.length})</span>
+                  <span>Stack</span>
                 </button>
                 <button
                   type="button"
@@ -1388,7 +1483,7 @@ export default function AdminDashboard() {
                       : 'border-[#8E8E8A] bg-[#D6D6D2] text-[#333333] hover:bg-white'
                   }`}
                 >
-                  <span>Walls &amp; Space ({activeGridSize}×{activeGridSize})</span>
+                  <span>Build Floor &amp; Walls</span>
                 </button>
               </div>
 
@@ -1447,9 +1542,9 @@ export default function AdminDashboard() {
                             />
                             <span
                               data-testid={`inventory-qty-${item.type}`}
-                              className="pointer-events-none absolute bottom-0.5 right-0.5 rounded-[2px] border border-black/50 bg-black/75 px-1 text-[8px] font-bold leading-tight text-[#FACC15]"
+                              className="pointer-events-none absolute bottom-0.5 right-0.5 rounded-[2px] border border-black/50 bg-black/70 px-1 text-[8px] font-bold leading-tight text-[#34D399]"
                             >
-                              ×{item.quantity}
+                              ∞
                             </span>
                             {item.defaultScale !== 1 && (
                               <span className="pointer-events-none absolute top-0.5 left-0.5 rounded-[2px] bg-[#00748C] px-0.5 text-[7px] font-bold leading-tight text-white">
@@ -1721,36 +1816,111 @@ export default function AdminDashboard() {
                 data-testid="admin-architecture-panel"
                 className="rounded-[2px] border border-[#8E8E8A] bg-[#CCCCCC] p-2 space-y-2 shadow-[inset_0_1px_2px_rgba(0,0,0,0.18)] text-[10px]"
               >
-                {/* Room Space / Grid Expansion (10x10 up to 16x16) */}
-                <div>
-                  <div className="flex items-center justify-between font-bold text-[#1E1E1E] mb-1">
-                    <span>Expand Room Floor Space:</span>
-                    <span className="font-mono text-[#D97706]">
-                      {activeGridSize}×{activeGridSize} (
-                      {activeGridSize * activeGridSize} tiles)
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-6 gap-1">
-                    {[10, 12, 14, 16, 18, 20].map((size) => (
+                {/* Manual Floor Builder & Multi-Story Level Switcher (For Staircases Up & Down!) */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between font-bold text-[#1E1E1E]">
+                    <span>Manual Floor Builder:</span>
+                    <div className="flex items-center gap-1">
                       <button
-                        key={size}
                         type="button"
-                        data-testid={`room-grid-size-${size}`}
-                        onClick={() => {
-                          updateRoomSettings({ gridSize: size });
-                          setStatusToast(
-                            `Room expanded to ${size}×${size} (${size * size} tiles) · Auto-saved!`
-                          );
-                        }}
-                        className={`rounded-[2px] border py-1 font-bold ${
-                          activeGridSize === size
-                            ? 'border-black bg-[#15803D] text-white'
-                            : 'border-[#7A7A76] bg-[#ECECE8] text-black hover:bg-white'
-                        }`}
+                        onClick={() =>
+                          updateRoomSettings({
+                            gridSize: Math.min(28, activeGridSize + 2),
+                          })
+                        }
+                        className="rounded border border-black bg-[#15803D] px-1.5 py-0.5 text-[9px] font-bold text-white hover:bg-[#16A34A]"
                       >
-                        {size}×{size}
+                        + Expand Floor
                       </button>
-                    ))}
+                      <button
+                        type="button"
+                        onClick={() =>
+                          updateRoomSettings({
+                            gridSize: Math.max(8, activeGridSize - 2),
+                          })
+                        }
+                        className="rounded border border-black bg-[#4A4745] px-1.5 py-0.5 text-[9px] font-bold text-white hover:bg-black"
+                      >
+                        Shrink
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Click-on-Canvas Floor Tile Brush: Build Floor Tile vs Erase Floor Tile */}
+                  <div className="grid grid-cols-3 gap-1">
+                    <button
+                      type="button"
+                      data-testid="manual-floor-paint-add"
+                      onClick={() => {
+                        setManualFloorTool((prev) =>
+                          prev === 'add_floor' ? 'none' : 'add_floor'
+                        );
+                        setClickToPlaceMode(false);
+                      }}
+                      className={`rounded-[2px] border py-1 font-bold ${
+                        manualFloorTool === 'add_floor'
+                          ? 'border-black bg-[#15803D] text-white'
+                          : 'border-[#7A7A76] bg-[#ECECE8] text-black hover:bg-white'
+                      }`}
+                    >
+                      + Paint Floor Tile
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="manual-floor-paint-remove"
+                      onClick={() => {
+                        setManualFloorTool((prev) =>
+                          prev === 'remove_floor' ? 'none' : 'remove_floor'
+                        );
+                        setClickToPlaceMode(false);
+                      }}
+                      className={`rounded-[2px] border py-1 font-bold ${
+                        manualFloorTool === 'remove_floor'
+                          ? 'border-black bg-[#C93B2B] text-white'
+                          : 'border-[#7A7A76] bg-[#ECECE8] text-black hover:bg-white'
+                      }`}
+                    >
+                      - Erase Floor Tile
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setManualFloorTool('none')}
+                      className={`rounded-[2px] border py-1 font-bold ${
+                        manualFloorTool === 'none'
+                          ? 'border-black bg-[#2B2827] text-white'
+                          : 'border-[#7A7A76] bg-[#ECECE8] text-black hover:bg-white'
+                      }`}
+                    >
+                      Done Floor
+                    </button>
+                  </div>
+
+                  {/* Story Level Selector for Staircase Up (+1, +2) and Staircase Down (-1) */}
+                  <div className="flex items-center justify-between pt-0.5">
+                    <span className="font-bold text-[#333333]">
+                      Floor Level (Stairs):
+                    </span>
+                    <div className="flex items-center gap-1">
+                      {[
+                        { z: -1, label: 'Down (-1)' },
+                        { z: 0, label: 'Ground' },
+                        { z: 1, label: 'Up (+1)' },
+                        { z: 2, label: 'Top (+2)' },
+                      ].map((lv) => (
+                        <button
+                          key={lv.z}
+                          type="button"
+                          onClick={() => setActiveBuildFloorZ(lv.z)}
+                          className={`rounded border px-1.5 py-0.5 text-[8px] font-bold ${
+                            activeBuildFloorZ === lv.z
+                              ? 'border-black bg-[#D4912A] text-white'
+                              : 'border-[#7A7A76] bg-white text-black'
+                          }`}
+                        >
+                          {lv.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
@@ -2082,6 +2252,15 @@ export default function AdminDashboard() {
                         type="button"
                         onClick={() => {
                           setColorVariant(hex);
+                          if (
+                            warehouseTab === 'architecture' ||
+                            manualFloorTool !== 'none'
+                          ) {
+                            updateRoomSettings({ floorColor: hex });
+                            setStatusToast(
+                              `Floor color updated to ${hex} (Auto-saved)!`
+                            );
+                          }
                           if (selectedInventoryItemId) {
                             updateInventoryItemTransform(
                               selectedInventoryItemId,
@@ -2114,11 +2293,12 @@ export default function AdminDashboard() {
                 Drag or click furni to place them in the room!
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-3 gap-1.5">
                 <button
                   type="button"
                   data-testid="admin-place-furni-btn"
                   onClick={() => {
+                    setManualFloorTool('none');
                     placeFurnitureAtTile(
                       {
                         type: selectedType,
@@ -2138,7 +2318,7 @@ export default function AdminDashboard() {
                       coordY
                     );
                   }}
-                  className="h-[28px] rounded-[3px] border-2 border-black bg-[#D49A2A] px-2 text-[11px] font-bold text-white hover:bg-[#E3A836] active:translate-y-[1px] shadow-[inset_0_1px_0_#F7CA65] whitespace-nowrap"
+                  className="h-[28px] rounded-[3px] border-2 border-black bg-[#D49A2A] px-1.5 text-[10px] font-bold text-white hover:bg-[#E3A836] active:translate-y-[1px] shadow-[inset_0_1px_0_#F7CA65] whitespace-nowrap"
                 >
                   Place Furni
                 </button>
@@ -2146,14 +2326,34 @@ export default function AdminDashboard() {
                 <button
                   type="button"
                   data-testid="click-to-place-toggle"
-                  onClick={() => setClickToPlaceMode((prev) => !prev)}
-                  className={`h-[28px] rounded-[3px] border-2 border-black px-2 text-[11px] font-bold text-white active:translate-y-[1px] whitespace-nowrap ${
-                    clickToPlaceMode
+                  onClick={() => {
+                    setManualFloorTool('none');
+                    setClickToPlaceMode((prev) => !prev);
+                  }}
+                  className={`h-[28px] rounded-[3px] border-2 border-black px-1.5 text-[10px] font-bold text-white active:translate-y-[1px] whitespace-nowrap ${
+                    clickToPlaceMode && manualFloorTool === 'none'
                       ? 'bg-[#00748C] hover:bg-[#0089A6] shadow-[inset_0_1px_0_#38BDF8]'
                       : 'bg-[#52524E] hover:bg-[#666662] shadow-[inset_0_1px_0_#999995]'
                   }`}
                 >
-                  Click to Place
+                  {clickToPlaceMode ? 'Click: Place' : 'Click: Off'}
+                </button>
+
+                <button
+                  type="button"
+                  data-testid="select-one-by-one-toggle"
+                  onClick={() => {
+                    setManualFloorTool('none');
+                    setClickToPlaceMode(false);
+                  }}
+                  className={`h-[28px] rounded-[3px] border-2 border-black px-1.5 text-[10px] font-bold text-white active:translate-y-[1px] whitespace-nowrap ${
+                    !clickToPlaceMode && manualFloorTool === 'none'
+                      ? 'bg-[#15803D] shadow-[inset_0_1px_0_#4ADE80]'
+                      : 'bg-[#2B2827] hover:bg-black'
+                  }`}
+                  title="Select or remove objects on the floor manually one by one"
+                >
+                  Select 1-by-1
                 </button>
               </div>
 
@@ -2469,14 +2669,31 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* Center Isometric Room Canvas + Live 3D YouTube TV Screen Overlay */}
+        {/* Center Isometric Room Canvas + Live 3D YouTube TV Screen Overlay (Drag anywhere to pan camera!) */}
         <div className="relative flex-1 w-full flex items-center justify-center my-auto">
-          <div className="relative w-full max-w-[760px]">
+          <div
+            className="relative w-full max-w-[760px]"
+            style={{
+              transform: `scale(${adminCameraZoom})`,
+              transformOrigin: 'center center',
+            }}
+          >
             <canvas
               ref={previewCanvasRef}
               data-testid="admin-iso-drop-canvas"
+              onMouseDown={handleCanvasMouseDown}
               onMouseMove={handleCanvasMouseMove}
-              onMouseLeave={() => setCanvasHoverTile(null)}
+              onMouseUp={handleCanvasMouseUp}
+              onMouseLeave={() => {
+                adminCamDragRef.current.isDown = false;
+                setCanvasHoverTile(null);
+              }}
+              onWheel={(e) => {
+                const delta = e.deltaY < 0 ? 0.1 : -0.1;
+                setAdminCameraZoom((z) =>
+                  Math.max(0.55, Math.min(1.85, z + delta))
+                );
+              }}
               onDragOver={handleCanvasDragOver}
               onDragLeave={() => setDropHoverTile(null)}
               onDrop={handleCanvasDrop}
@@ -2650,14 +2867,30 @@ export default function AdminDashboard() {
           </div>
         </div>
 
-        {/* Bottom Classic Habbo Selected Furni Action Bar */}
-        <div className="w-full max-w-[740px] flex flex-wrap items-center justify-center gap-2 pb-2 px-2 z-10">
+        {/* Bottom Classic Habbo Selected Furni Action Bar (Hidden when nothing is selected!) */}
+        <div className="w-full max-w-[760px] flex flex-wrap items-center justify-center gap-2 pb-2 px-2 z-10">
+          <button
+            type="button"
+            onClick={() => {
+              setAdminCameraPan({ x: 0, y: 0 });
+              setAdminCameraZoom(1);
+            }}
+            className="h-[30px] rounded-[4px] border-2 border-black bg-[#2B2827] px-2.5 text-[10px] font-bold text-[#FACC15] hover:bg-black"
+            title="Reset Camera Pan & Zoom"
+          >
+            Center Cam
+          </button>
+
           {objects.length > 0 && (
             <select
               aria-label="Select placed furniture item"
               data-testid="admin-placed-furni-select"
               value={activeFloorObj?.id || ''}
               onChange={(e) => {
+                if (!e.target.value) {
+                  setSelectedPlacedObjectId(null);
+                  return;
+                }
                 const picked = objects.find((o) => o.id === e.target.value);
                 if (picked) {
                   setSelectedPlacedObjectId(picked.id);
@@ -2672,9 +2905,7 @@ export default function AdminDashboard() {
               }}
               className="h-[30px] rounded-[4px] border-2 border-black bg-[#E2E2DE] px-2 text-[11px] font-bold text-black focus:outline-none"
             >
-              <option value="" disabled>
-                Select Furni ({objects.length} in room)...
-              </option>
+              <option value="">-- Select Object 1-by-1 (None) --</option>
               {objects.map((o) => (
                 <option key={o.id} value={o.id}>
                   {HABBO_ENGLISH_NAMES[o.type] || o.label} ({o.x},{o.y}) ·{' '}
@@ -2684,7 +2915,7 @@ export default function AdminDashboard() {
             </select>
           )}
 
-          {activeFloorObj ? (
+          {activeFloorObj && (
             <div className="flex flex-wrap items-center gap-1.5 rounded-[5px] border-2 border-black bg-[#2B2827] px-3 py-1.5 text-[11px] text-white shadow-lg">
               <span className="font-bold text-[#FACC15] mr-1">
                 {HABBO_ENGLISH_NAMES[activeFloorObj.type] ||
@@ -2832,27 +3063,50 @@ export default function AdminDashboard() {
                 <span>Stow to Inv</span>
               </button>
 
+              {(activeFloorObj.type === 'stairs_up' ||
+                activeFloorObj.type === 'stairs_down') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    const updated = generateFloorDeckForStaircase(
+                      activeFloorObj,
+                      roomSettings
+                    );
+                    updateRoomSettings({
+                      customFloorTiles: updated.customFloorTiles,
+                    });
+                    setStatusToast(
+                      `Built walkable floor deck for ${activeFloorObj.label} (Auto-saved)!`
+                    );
+                  }}
+                  className="inline-flex items-center gap-1 rounded border border-black bg-[#D4912A] px-2 py-0.5 font-bold text-white hover:bg-[#E3A836]"
+                >
+                  <span>+ Build Stair Floor</span>
+                </button>
+              )}
+
               <button
                 type="button"
                 data-testid="floor-object-remove"
                 onClick={() => {
                   removeObject(activeFloorObj.id);
                   setSelectedPlacedObjectId(null);
-                  setStatusToast('Furni picked up and removed!');
+                  setStatusToast('Removed selected object!');
                 }}
                 className="inline-flex items-center gap-1 rounded border border-black bg-[#C93B2B] px-2 py-0.5 font-bold text-white hover:bg-[#E04836]"
               >
                 <Trash2 className="h-3 w-3" />
-                <span>Delete</span>
+                <span>Remove 1-by-1</span>
               </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2 rounded-[5px] border-2 border-black bg-[#D6D6D2] px-3 py-1.5 text-[11px] text-[#222222] shadow">
-              <span className="font-bold">Tile ({coordX}, {coordY})</span>
-              <span>·</span>
-              <span>
-                Click any floor tile or drag a furni item from the Warehouse.
-              </span>
+
+              <button
+                type="button"
+                onClick={() => setSelectedPlacedObjectId(null)}
+                className="rounded border border-black bg-[#4A4745] px-1.5 py-0.5 text-[10px] font-bold text-white hover:bg-black"
+                title="Unselect object"
+              >
+                ×
+              </button>
             </div>
           )}
         </div>

@@ -472,8 +472,8 @@ test('generateRandomVisitorAvatar creates deterministic or random Habbo visitor 
 
 test('clampObjectScale, angleToIsometricRotation, and updateRoomObjectTransform support real-time rotation and scaling', () => {
   assert.equal(clampObjectScale(undefined), 1);
-  assert.equal(clampObjectScale(0.1), 0.4);
-  assert.equal(clampObjectScale(3.2), 2.5);
+  assert.equal(clampObjectScale(0.1), 0.35);
+  assert.equal(clampObjectScale(3.5), 3.0);
   assert.equal(clampObjectScale(1.456), 1.46);
 
   assert.equal(rotationToAngle('se'), 0);

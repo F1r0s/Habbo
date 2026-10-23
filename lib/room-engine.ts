@@ -168,6 +168,7 @@ export interface RoomPlayerPresence {
   isOwner: boolean;
   x: number;
   y: number;
+  z?: number;
   targetX: number;
   targetY: number;
   facing: IsometricRotation;
@@ -218,21 +219,31 @@ export type FloorPatternType =
   | 'emerald_turf'
   | 'cyber_glass';
 
+export interface CustomFloorTile {
+  x: number;
+  y: number;
+  z: number; // -2..4 (0 = ground, +1/+2 = upper floors, -1/-2 = lower floors)
+  color?: string;
+}
+
 export interface RoomSettings {
   roomTitle: string;
   roomDescription: string;
-  gridSize: number; // 10, 12, 14, or 16
+  gridSize: number;
   wallColor: string;
   wallPattern: WallPatternType;
   wallHeight: number; // 90..160
   floorColor: string;
   floorPattern: FloorPatternType;
   floorThickness: number; // 4..16
+  customFloorTiles?: CustomFloorTile[];
+  removedBaseTiles?: string[];
+  musicCreator?: string;
 }
 
 export const DEFAULT_ROOM_SETTINGS: RoomSettings = {
   roomTitle: "Higma's HabboFolio Club Lounge",
-  roomDescription: 'Official HabboFolio VIP Suite · Chat, sit & explore projects!',
+  roomDescription: 'Official HabboFolio VIP Suite · Original Music by Higma',
   gridSize: 10,
   wallColor: '#B85A46',
   wallPattern: 'brick',
@@ -240,6 +251,9 @@ export const DEFAULT_ROOM_SETTINGS: RoomSettings = {
   floorColor: '#DFC184',
   floorPattern: 'oak_planks',
   floorThickness: 7,
+  customFloorTiles: [],
+  removedBaseTiles: [],
+  musicCreator: 'Higma',
 };
 
 export function sanitizeRoomSettings(
@@ -316,7 +330,137 @@ export function sanitizeRoomSettings(
       ? (input.floorPattern as FloorPatternType)
       : DEFAULT_ROOM_SETTINGS.floorPattern,
     floorThickness: clampedFloorT,
+    customFloorTiles: Array.isArray(input.customFloorTiles)
+      ? input.customFloorTiles
+          .filter(
+            (t) =>
+              t &&
+              typeof t.x === 'number' &&
+              typeof t.y === 'number' &&
+              typeof t.z === 'number'
+          )
+          .map((t) => ({
+            x: Math.round(t.x),
+            y: Math.round(t.y),
+            z: Math.max(-3, Math.min(5, Math.round(t.z))),
+            color: typeof t.color === 'string' ? t.color : undefined,
+          }))
+      : [],
+    removedBaseTiles: Array.isArray(input.removedBaseTiles)
+      ? input.removedBaseTiles.filter((k) => typeof k === 'string')
+      : [],
+    musicCreator:
+      typeof input.musicCreator === 'string' && input.musicCreator.trim()
+        ? input.musicCreator.trim()
+        : 'Higma',
   };
+}
+
+/**
+ * Resolves the target landing tile (landingX, landingY) and destination floor level (targetZ)
+ * when an avatar uses a `stairs_up` or `stairs_down` object.
+ */
+export function resolveStaircaseTargetFloor(stairObj: RoomObject): {
+  landingX: number;
+  landingY: number;
+  targetZ: number;
+} {
+  const baseZ = stairObj.z || 0;
+  const isUp = stairObj.type === 'stairs_up';
+  const targetZ = isUp
+    ? Math.min(4, baseZ + 1)
+    : Math.max(-2, baseZ - 1);
+  const dx =
+    stairObj.rotation === 'se'
+      ? 1
+      : stairObj.rotation === 'nw'
+        ? -1
+        : 0;
+  const dy =
+    stairObj.rotation === 'sw'
+      ? 1
+      : stairObj.rotation === 'ne'
+        ? -1
+        : 0;
+  return {
+    landingX: stairObj.x + dx,
+    landingY: stairObj.y + dy,
+    targetZ,
+  };
+}
+
+/**
+ * Manually adds or removes a single floor tile at (x, y, z) in RoomSettings.
+ */
+export function toggleManualFloorTile(
+  settings: RoomSettings,
+  x: number,
+  y: number,
+  z: number,
+  mode: 'add' | 'remove',
+  color?: string
+): RoomSettings {
+  const rx = Math.round(x);
+  const ry = Math.round(y);
+  const rz = Math.max(-2, Math.min(4, Math.round(z)));
+  const existingCustom = settings.customFloorTiles || [];
+  const existingRemoved = new Set(settings.removedBaseTiles || []);
+  const key = `${rx},${ry}`;
+
+  if (mode === 'remove') {
+    const filteredCustom = existingCustom.filter(
+      (t) => !(t.x === rx && t.y === ry && t.z === rz)
+    );
+    if (rz === 0 && rx >= 0 && rx < settings.gridSize && ry >= 0 && ry < settings.gridSize) {
+      existingRemoved.add(key);
+    }
+    return sanitizeRoomSettings({
+      ...settings,
+      customFloorTiles: filteredCustom,
+      removedBaseTiles: Array.from(existingRemoved),
+    });
+  }
+
+  // mode === 'add'
+  if (rz === 0) {
+    existingRemoved.delete(key);
+  }
+  const withoutSame = existingCustom.filter(
+    (t) => !(t.x === rx && t.y === ry && t.z === rz)
+  );
+  return sanitizeRoomSettings({
+    ...settings,
+    customFloorTiles: [
+      ...withoutSame,
+      { x: rx, y: ry, z: rz, color: color || settings.floorColor },
+    ],
+    removedBaseTiles: Array.from(existingRemoved),
+  });
+}
+
+/**
+ * Generates a 3x3 walkable floor deck at the landing of a staircase (up or down) so
+ * the player can immediately walk on the upper/lower floor and build more tiles from there.
+ */
+export function generateFloorDeckForStaircase(
+  stairObj: RoomObject,
+  settings: RoomSettings
+): RoomSettings {
+  const { landingX, landingY, targetZ } = resolveStaircaseTargetFloor(stairObj);
+  let next = { ...settings };
+  for (let ox = -1; ox <= 1; ox++) {
+    for (let oy = -1; oy <= 1; oy++) {
+      next = toggleManualFloorTile(
+        next,
+        Math.max(0, landingX + ox),
+        Math.max(0, landingY + oy),
+        targetZ,
+        'add',
+        settings.floorColor
+      );
+    }
+  }
+  return next;
 }
 
 export interface GridCoord {
@@ -1670,8 +1814,17 @@ export function screenToGrid(
 export function isWithinGrid(
   x: number,
   y: number,
-  gridSize: number = GRID_SIZE
+  gridSize: number = GRID_SIZE,
+  customFloorTiles?: CustomFloorTile[],
+  removedBaseTiles?: string[]
 ): boolean {
+  const key = `${x},${y}`;
+  if (customFloorTiles && customFloorTiles.some((t) => t.x === x && t.y === y)) {
+    return true;
+  }
+  if (removedBaseTiles && removedBaseTiles.includes(key)) {
+    return false;
+  }
   return x >= 0 && x < gridSize && y >= 0 && y < gridSize;
 }
 
@@ -1700,9 +1853,13 @@ export function isTileWalkable(
   x: number,
   y: number,
   objects: RoomObject[],
-  gridSize: number = GRID_SIZE
+  gridSize: number = GRID_SIZE,
+  customFloorTiles?: CustomFloorTile[],
+  removedBaseTiles?: string[]
 ): boolean {
-  if (!isWithinGrid(x, y, gridSize)) return false;
+  if (!isWithinGrid(x, y, gridSize, customFloorTiles, removedBaseTiles)) {
+    return false;
+  }
   for (const obj of objects) {
     if (obj.x === x && obj.y === y && !obj.walkable) {
       return false;
