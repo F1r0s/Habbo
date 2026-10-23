@@ -16,6 +16,7 @@ import {
   OBJECT_CATALOG,
   DEFAULT_POSTER_IMAGES,
   isWallPosterType,
+  getFloorElevationAtTile,
   gridToScreen,
   sortObjectsForRender,
   computeTimeOfDayTheme,
@@ -758,44 +759,106 @@ function drawBrickWallsAndFloor(
     }
   }
 
-  // --- 6. MANUALLY BUILT & MULTI-STORY FLOOR TILES (Ground Extensions, Upstairs & Downstairs) ---
+  // --- 6. COMPLETE TOP FLOOR (UPSTAIRS), BOTTOM FLOOR (DOWNSTAIRS) & MANUAL FLOOR TILES ---
   if (
     roomSettings.customFloorTiles &&
     roomSettings.customFloorTiles.length > 0
   ) {
+    const customSet = new Set(
+      roomSettings.customFloorTiles.map((t) => `${t.x},${t.y},${t.z}`)
+    );
+    const hasTileAt = (tx: number, ty: number, tz: number) =>
+      customSet.has(`${tx},${ty},${tz}`) ||
+      (tz === 0 &&
+        tx >= 0 &&
+        tx < activeGridSize &&
+        ty >= 0 &&
+        ty < activeGridSize);
+
     const sortedTiles = [...roomSettings.customFloorTiles].sort((a, b) => {
       if (a.z !== b.z) return a.z - b.z;
       return a.x + a.y - (b.x + b.y);
     });
+
     for (const tile of sortedTiles) {
       const tileZ = (tile.z || 0) * 1.35;
       const { sx, sy } = gridToScreen(tile.x, tile.y, tileZ, originX, originY);
       const tCol = tile.color || baseFloorFill;
-      const tLeft = shadeHexColor(tCol, 0.8);
-      const tRight = shadeHexColor(tCol, 0.66);
+      const altCol = shadeHexColor(tCol, 0.93);
+      const surfaceCol = (tile.x + tile.y) % 2 === 0 ? tCol : altCol;
+      const tLeft = shadeHexColor(tCol, 0.78);
+      const tRight = shadeHexColor(tCol, 0.64);
+      const hw = TILE_WIDTH / 2;
+      const hh = TILE_HEIGHT / 2;
 
-      // If elevated upper story (z > 0), draw subtle corner support columns down toward floor
-      if (tile.z > 0) {
-        ctx.strokeStyle = 'rgba(15, 23, 42, 0.45)';
-        ctx.lineWidth = 2;
+      const exposedFrontLeft = !hasTileAt(tile.x, tile.y + 1, tile.z);
+      const exposedFrontRight = !hasTileAt(tile.x + 1, tile.y, tile.z);
+      const exposedBackLeft = !hasTileAt(tile.x - 1, tile.y, tile.z);
+      const exposedBackRight = !hasTileAt(tile.x, tile.y - 1, tile.z);
+
+      // 1. Seamless Top Diamond Surface
+      drawIsoDiamond(
+        ctx,
+        sx,
+        sy,
+        TILE_WIDTH,
+        TILE_HEIGHT,
+        surfaceCol,
+        floorLineStroke,
+        1
+      );
+
+      // 2. Only draw 3D front slab thickness on exposed outer front edges so the floor is one unified room!
+      if (exposedFrontLeft) {
+        ctx.beginPath();
+        ctx.moveTo(sx - hw, sy + hh);
+        ctx.lineTo(sx, sy + TILE_HEIGHT);
+        ctx.lineTo(sx, sy + TILE_HEIGHT + slabH);
+        ctx.lineTo(sx - hw, sy + hh + slabH);
+        ctx.closePath();
+        ctx.fillStyle = tLeft;
+        ctx.fill();
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
+      if (exposedFrontRight) {
         ctx.beginPath();
         ctx.moveTo(sx, sy + TILE_HEIGHT);
-        ctx.lineTo(sx, sy + TILE_HEIGHT + tile.z * 24);
+        ctx.lineTo(sx + hw, sy + hh);
+        ctx.lineTo(sx + hw, sy + hh + slabH);
+        ctx.lineTo(sx, sy + TILE_HEIGHT + slabH);
+        ctx.closePath();
+        ctx.fillStyle = tRight;
+        ctx.fill();
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 1;
         ctx.stroke();
       }
 
-      drawIsoPrism(
-        ctx,
-        sx,
-        sy + slabH,
-        TILE_WIDTH,
-        TILE_HEIGHT,
-        slabH,
-        tCol,
-        tLeft,
-        tRight,
-        '#000000'
-      );
+      // 3. Subtle architectural low wall / terrace railing along exposed back edges of Top/Bottom floors
+      if (tile.z !== 0 && exposedBackRight && tile.y <= 1) {
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(sx, sy - 14);
+        ctx.lineTo(sx + hw, sy + hh - 14);
+        ctx.stroke();
+        ctx.strokeStyle = '#E2E8F0';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
+      if (tile.z !== 0 && exposedBackLeft && tile.x <= 1) {
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(sx - hw, sy + hh - 14);
+        ctx.lineTo(sx, sy - 14);
+        ctx.stroke();
+        ctx.strokeStyle = '#E2E8F0';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      }
     }
   }
 }
@@ -878,14 +941,28 @@ function drawRoomObject(
   isHovered: boolean,
   isSelected: boolean,
   tick: number,
-  hideStaticAnimals: boolean = false
+  hideStaticAnimals: boolean = false,
+  roomSettings?: RoomSettings
 ) {
   // When in the live room with free-roaming animals, skip drawing static dragons on tiles
   if (hideStaticAnimals && obj.type === 'pet_dragon') {
     return;
   }
 
-  const { sx, sy } = gridToScreen(obj.x, obj.y, obj.z, originX, originY);
+  const floorStoryZ =
+    !obj.id.startsWith('__') &&
+    obj.type !== 'stairs_up' &&
+    obj.type !== 'stairs_down'
+      ? getFloorElevationAtTile(obj.x, obj.y, roomSettings)
+      : 0;
+  const effectiveObjZ = obj.z + floorStoryZ * 1.35;
+  const { sx, sy } = gridToScreen(
+    obj.x,
+    obj.y,
+    effectiveObjZ,
+    originX,
+    originY
+  );
   const atlas = getHabboSpriteAtlas();
 
   const objScale = clampObjectScale(obj.scale);
@@ -3043,9 +3120,13 @@ export function renderIsometricRoom(params: RenderRoomParams) {
   ctx.imageSmoothingEnabled = false;
   ctx.clearRect(0, 0, width, height);
 
-  // Ensure the floor is always large enough to cover any placed furniture so items never float in black void
+  // Ensure the ground floor covers any ground-floor furniture without stretching under custom Top/Bottom terrace wings
+  const customCoords = new Set(
+    (roomSettings.customFloorTiles || []).map((t) => `${t.x},${t.y}`)
+  );
   let effectiveGridSize = roomSettings.gridSize || GRID_SIZE;
   for (const o of objects) {
+    if (customCoords.has(`${o.x},${o.y}`)) continue;
     if (o.x + 1 > effectiveGridSize) effectiveGridSize = o.x + 1;
     if (o.y + 1 > effectiveGridSize) effectiveGridSize = o.y + 1;
   }
@@ -3164,7 +3245,8 @@ export function renderIsometricRoom(params: RenderRoomParams) {
       obj.id === hoveredObjectId,
       obj.id === selectedObjectId,
       tick,
-      hideStaticAnimals
+      hideStaticAnimals,
+      effectiveRoomSettings
     );
   }
 

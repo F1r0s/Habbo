@@ -205,6 +205,15 @@ export async function POST(req: NextRequest) {
       updatedAt = nextStamp;
       didMutateRoom = true;
     }
+    if (typeof body.customBgmUrl === 'string' || body.customBgmUrl === null) {
+      serverSettings = sanitizeRoomSettings({
+        ...serverSettings,
+        customBgmUrl: body.customBgmUrl,
+      });
+      hasCustomState = true;
+      updatedAt = nextStamp;
+      didMutateRoom = true;
+    }
     if (body.playerPresence && typeof body.playerPresence.id === 'string') {
           const p = body.playerPresence as RoomPlayerPresence;
           serverPlayers.set(p.id, {

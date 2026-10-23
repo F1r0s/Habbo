@@ -291,6 +291,8 @@ export default function AdminDashboard() {
     setCustomBgmAudio,
     updateRoomSettings,
     paintManualFloorTile,
+    addCompleteFloorWing,
+    clearCustomFloors,
     updateObjectVideoUrl,
     resetRoomToDefault,
     applyOrganizedPreset,
@@ -317,7 +319,12 @@ export default function AdminDashboard() {
 
   // Placement, Manual Selection & Manual Floor Builder settings
   const [placementMode, setPlacementMode] = useState<PlacementMode>('replace');
-  const [clickToPlaceMode, setClickToPlaceMode] = useState<boolean>(false);
+  const [clickToPlaceMode, setClickToPlaceMode] = useState<boolean>(true);
+  const [contextMenuState, setContextMenuState] = useState<{
+    objectId: string;
+    clientX: number;
+    clientY: number;
+  } | null>(null);
   const [manualFloorTool, setManualFloorTool] = useState<
     'none' | 'add_floor' | 'remove_floor'
   >('none');
@@ -408,6 +415,8 @@ export default function AdminDashboard() {
     setSelectedType(type);
     setSelectedInventoryItemId(null);
     setUseStackBrush(false);
+    setManualFloorTool('none');
+    setClickToPlaceMode(true);
     const spec = OBJECT_CATALOG[type];
     setObjectLabel(HABBO_ENGLISH_NAMES[type] || spec.name);
     setColorVariant(spec.defaultColor);
@@ -427,6 +436,8 @@ export default function AdminDashboard() {
     setSelectedInventoryItemId(item.id);
     setSelectedType(item.type);
     setUseStackBrush(false);
+    setManualFloorTool('none');
+    setClickToPlaceMode(true);
     setObjectLabel(item.label || HABBO_ENGLISH_NAMES[item.type]);
     setColorVariant(item.colorVariant);
     setRotation(item.defaultRotation);
@@ -813,7 +824,7 @@ export default function AdminDashboard() {
     }
 
     const hitObj =
-      !clickToPlaceMode && manualFloorTool === 'none'
+      manualFloorTool === 'none'
         ? resolveObjectAtPointer(e.clientX, e.clientY)
         : null;
     setHoveredPlacedObjectId(hitObj ? hitObj.id : null);
@@ -1952,6 +1963,55 @@ export default function AdminDashboard() {
                     </button>
                   </div>
 
+                  {/* Idea A: 1-Click Complete Top Floor (Upstairs) & Complete Bottom Floor (Downstairs) */}
+                  <div className="grid grid-cols-3 gap-1 pt-0.5">
+                    <button
+                      type="button"
+                      data-testid="add-complete-top-floor-btn"
+                      onClick={() => {
+                        addCompleteFloorWing('top');
+                        setActiveBuildFloorZ(1);
+                        setStatusToast(
+                          'Added Complete Top Floor (Upstairs +1) & Staircase Up (Auto-saved)!'
+                        );
+                      }}
+                      className="rounded-[2px] border border-black bg-[#D4912A] py-1 px-1 text-[9px] font-bold text-white hover:bg-[#E3A836]"
+                      title="Build a complete connected Upper Floor Terrace with a Staircase Up"
+                    >
+                      + Complete Top Floor
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="add-complete-bottom-floor-btn"
+                      onClick={() => {
+                        addCompleteFloorWing('bottom');
+                        setActiveBuildFloorZ(-1);
+                        setStatusToast(
+                          'Added Complete Bottom Floor (Downstairs -1) & Staircase Down (Auto-saved)!'
+                        );
+                      }}
+                      className="rounded-[2px] border border-black bg-[#00748C] py-1 px-1 text-[9px] font-bold text-white hover:bg-[#0089A6]"
+                      title="Build a complete connected Lower Floor Lounge with a Staircase Down"
+                    >
+                      + Complete Bot Floor
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="clear-extra-floors-btn"
+                      onClick={() => {
+                        clearCustomFloors();
+                        setActiveBuildFloorZ(0);
+                        setStatusToast(
+                          'Cleared extra custom floor tiles (Auto-saved)!'
+                        );
+                      }}
+                      className="rounded-[2px] border border-black bg-[#C93B2B] py-1 px-1 text-[9px] font-bold text-white hover:bg-[#E04836]"
+                      title="Remove extra custom floor tiles"
+                    >
+                      Clear Extra Floors
+                    </button>
+                  </div>
+
                   {/* Story Level Selector for Staircase Up (+1, +2) and Staircase Down (-1) */}
                   <div className="flex items-center justify-between pt-0.5">
                     <span className="font-bold text-[#333333]">
@@ -2113,14 +2173,42 @@ export default function AdminDashboard() {
                   </div>
                 </div>
 
-                {/* Permanent Locked Signature Music Credit */}
-                <div className="border-t border-[#999995] pt-1.5 flex items-center justify-between text-[9px]">
+                {/* Permanent Server-Saved MP3 Uploader (Stays Permanently Until Changed Here in Floor Studio!) */}
+                <div className="border-t border-[#999995] pt-1.5 flex items-center justify-between gap-1 text-[9px]">
                   <span className="font-bold text-[#1E1E1E]">
-                    Room Soundtrack:
+                    Permanent MP3 Music:
                   </span>
-                  <span className="rounded border border-black/40 bg-[#2B2827] px-2 py-0.5 font-bold text-[#FACC15]">
-                    Original Instrumental by Higma (Locked 🎸)
-                  </span>
+                  <div className="flex items-center gap-1">
+                    <label
+                      data-testid="admin-upload-mp3-label"
+                      className="inline-flex items-center gap-1 rounded-[2px] border border-black bg-[#15803D] px-2 py-0.5 font-bold text-white hover:bg-[#16A34A] cursor-pointer"
+                      title="Upload your MP3 — saves permanently on the server until you change it here!"
+                    >
+                      <Upload className="h-2.5 w-2.5" />
+                      <span>
+                        {customBgmUrl ? 'Change MP3 (Saved ✓)' : 'Upload MP3'}
+                      </span>
+                      <input
+                        type="file"
+                        accept="audio/*"
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => {
+                            if (typeof reader.result === 'string') {
+                              setCustomBgmAudio(reader.result);
+                              setStatusToast(
+                                `Saved "${file.name}" permanently as Room Music!`
+                              );
+                            }
+                          };
+                          reader.readAsDataURL(file);
+                        }}
+                      />
+                    </label>
+                  </div>
                 </div>
               </div>
             )}
@@ -2740,11 +2828,25 @@ export default function AdminDashboard() {
                   hitObj ||
                   (tile ? getTopObjectAtTile(tile.x, tile.y, objects) : null);
                 if (targetObj) {
-                  removeObject(targetObj.id);
-                  setSelectedPlacedObjectId(null);
-                  setStatusToast(
-                    `Removed ${HABBO_ENGLISH_NAMES[targetObj.type] || targetObj.label} (${targetObj.x}, ${targetObj.y})!`
+                  setSelectedPlacedObjectId(targetObj.id);
+                  setCoordX(targetObj.x);
+                  setCoordY(targetObj.y);
+                  setObjectScale(clampObjectScale(targetObj.scale));
+                  setRotation(targetObj.rotation);
+                  setRotationAngle(
+                    normalizeRotationAngle(
+                      targetObj.rotationAngle,
+                      targetObj.rotation
+                    )
                   );
+                  setContextMenuState({
+                    objectId: targetObj.id,
+                    clientX: e.clientX,
+                    clientY: e.clientY,
+                  });
+                  pixelAudio.playConsoleClick();
+                } else {
+                  setContextMenuState(null);
                 }
               }}
               className="w-full h-auto cursor-pointer block"
@@ -2902,6 +3004,205 @@ export default function AdminDashboard() {
               })()}
           </div>
         </div>
+
+        {/* Right-Click Floating Habbo Context Menu when hovering & right-clicking any object in Floor Studio */}
+        {contextMenuState &&
+          activeFloorObj &&
+          contextMenuState.objectId === activeFloorObj.id && (
+            <div
+              data-testid="admin-right-click-menu"
+              style={{
+                left: `${Math.min(
+                  typeof window !== 'undefined' ? window.innerWidth - 250 : 600,
+                  Math.max(12, contextMenuState.clientX)
+                )}px`,
+                top: `${Math.min(
+                  typeof window !== 'undefined' ? window.innerHeight - 260 : 400,
+                  Math.max(12, contextMenuState.clientY)
+                )}px`,
+              }}
+              className="fixed z-50 w-56 rounded-[5px] border-2 border-black bg-[#E2E2DE] text-[#1E1E1E] shadow-[0_8px_28px_rgba(0,0,0,0.95)] overflow-hidden"
+            >
+              <div className="flex items-center justify-between border-b-2 border-[#8C5A0E] bg-[#D4912A] px-2.5 py-1 text-white">
+                <span className="truncate text-[10px] font-bold">
+                  {HABBO_ENGLISH_NAMES[activeFloorObj.type] ||
+                    activeFloorObj.label}{' '}
+                  ({activeFloorObj.x},{activeFloorObj.y})
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setContextMenuState(null)}
+                  className="flex h-4 w-4 items-center justify-center rounded-[2px] border border-black bg-[#C93B2B] text-white"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+
+              <div className="p-2 space-y-2 text-[10px]">
+                {/* 1. Rotate 360° Controls */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between font-bold">
+                    <span>Rotate 360°:</span>
+                    <button
+                      type="button"
+                      onClick={() => rotateObject(activeFloorObj.id, 1)}
+                      className="inline-flex items-center gap-1 rounded border border-black bg-[#00748C] px-2 py-0.5 text-[9px] font-bold text-white hover:bg-[#0089A6]"
+                    >
+                      <RotateCw className="h-2.5 w-2.5" />
+                      <span>Turn 90° ({activeFloorObj.rotation.toUpperCase()})</span>
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-4 gap-1">
+                    {(
+                      [
+                        { rot: 'se', deg: 0, label: '0° SE' },
+                        { rot: 'sw', deg: 90, label: '90° SW' },
+                        { rot: 'nw', deg: 180, label: '180° NW' },
+                        { rot: 'ne', deg: 270, label: '270° NE' },
+                      ] as const
+                    ).map((s) => (
+                      <button
+                        key={s.rot}
+                        type="button"
+                        onClick={() =>
+                          updateObjectTransform(activeFloorObj.id, {
+                            rotation: s.rot,
+                            rotationAngle: s.deg,
+                          })
+                        }
+                        className={`rounded border py-0.5 text-[8px] font-bold ${
+                          activeFloorObj.rotation === s.rot
+                            ? 'border-black bg-[#2B2827] text-white'
+                            : 'border-[#7A7A76] bg-white text-black hover:bg-amber-50'
+                        }`}
+                      >
+                        {s.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 2. Scale Size Controls */}
+                <div className="flex items-center gap-1.5 border-t border-[#BDBDB8] pt-1.5">
+                  <span className="font-bold">Scale:</span>
+                  <input
+                    type="range"
+                    min={MIN_OBJECT_SCALE}
+                    max={MAX_OBJECT_SCALE}
+                    step={0.05}
+                    value={clampObjectScale(activeFloorObj.scale)}
+                    onChange={(e) => {
+                      const nextS = clampObjectScale(Number(e.target.value));
+                      setObjectScale(nextS);
+                      updateObjectTransform(activeFloorObj.id, { scale: nextS });
+                    }}
+                    className="h-1.5 flex-1 accent-[#D97706] cursor-pointer"
+                  />
+                  <span className="font-mono font-bold">
+                    {clampObjectScale(activeFloorObj.scale).toFixed(2)}x
+                  </span>
+                </div>
+
+                {/* 3. Move & Elevate Controls */}
+                <div className="flex items-center justify-between border-t border-[#BDBDB8] pt-1.5">
+                  <span className="font-bold">Move / Z:</span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleNudgePlacedObject(activeFloorObj.id, -1, 0)
+                      }
+                      className="rounded border border-black bg-white px-1.5 py-0.5 font-bold hover:bg-amber-100"
+                    >
+                      ←
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleNudgePlacedObject(activeFloorObj.id, 0, -1)
+                      }
+                      className="rounded border border-black bg-white px-1.5 py-0.5 font-bold hover:bg-amber-100"
+                    >
+                      ↑
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleNudgePlacedObject(activeFloorObj.id, 0, 1)
+                      }
+                      className="rounded border border-black bg-white px-1.5 py-0.5 font-bold hover:bg-amber-100"
+                    >
+                      ↓
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        handleNudgePlacedObject(activeFloorObj.id, 1, 0)
+                      }
+                      className="rounded border border-black bg-white px-1.5 py-0.5 font-bold hover:bg-amber-100"
+                    >
+                      →
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateObjectZ(activeFloorObj.id, -1)}
+                      className="rounded border border-black bg-[#4A4745] px-1 py-0.5 font-bold text-white"
+                    >
+                      Z-
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => updateObjectZ(activeFloorObj.id, 1)}
+                      className="rounded border border-black bg-[#4A4745] px-1 py-0.5 font-bold text-white"
+                    >
+                      Z+
+                    </button>
+                  </div>
+                </div>
+
+                {/* 4. Duplicate & Delete Actions */}
+                <div className="grid grid-cols-2 gap-1.5 border-t border-[#BDBDB8] pt-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      placeFurnitureAtTile(
+                        {
+                          type: activeFloorObj.type,
+                          label: activeFloorObj.label,
+                          colorVariant:
+                            activeFloorObj.colorVariant || colorVariant,
+                          rotation: activeFloorObj.rotation,
+                          rotationAngle: activeFloorObj.rotationAngle,
+                          scale: activeFloorObj.scale,
+                          imageUrl: activeFloorObj.imageUrl,
+                          videoUrl: activeFloorObj.videoUrl,
+                        },
+                        activeFloorObj.x + 1,
+                        activeFloorObj.y
+                      );
+                      setContextMenuState(null);
+                    }}
+                    className="rounded border border-black bg-[#15803D] py-1 font-bold text-white hover:bg-[#16A34A]"
+                  >
+                    Duplicate
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      removeObject(activeFloorObj.id);
+                      setSelectedPlacedObjectId(null);
+                      setContextMenuState(null);
+                      setStatusToast('Object deleted!');
+                    }}
+                    className="inline-flex items-center justify-center gap-1 rounded border border-black bg-[#C93B2B] py-1 font-bold text-white hover:bg-[#E04836]"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                    <span>Delete</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
         {/* Bottom Classic Habbo Selected Furni Action Bar (Hidden when nothing is selected!) */}
         <div className="w-full max-w-[760px] flex flex-wrap items-center justify-center gap-2 pb-2 px-2 z-10">

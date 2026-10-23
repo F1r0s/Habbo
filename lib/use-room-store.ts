@@ -27,6 +27,7 @@ import {
     resolveStaircaseTargetFloor,
     toggleManualFloorTile,
     generateFloorDeckForStaircase,
+    buildCompleteTerraceFloor,
     pruneStalePlayers,
     isWallPosterType,
     isDrinkDispenserType,
@@ -558,7 +559,12 @@ export function useRoomStore() {
             setInventory(data.inventory);
           }
           if (data.settings) {
-            setRoomSettings(sanitizeRoomSettings(data.settings));
+            const cleanS = sanitizeRoomSettings(data.settings);
+            setRoomSettings(cleanS);
+            if (cleanS.customBgmUrl) {
+              setCustomBgmUrlState(cleanS.customBgmUrl);
+              pixelAudio.setCustomBgmUrl(cleanS.customBgmUrl);
+            }
           }
           if (Array.isArray(data.players)) {
             setRemotePlayers(
@@ -791,6 +797,10 @@ export function useRoomStore() {
           if (data.settings) {
             setRoomSettings((prev) => {
               const nextS = sanitizeRoomSettings(data.settings);
+              if (nextS.customBgmUrl && nextS.customBgmUrl !== customBgmUrl) {
+                setCustomBgmUrlState(nextS.customBgmUrl);
+                pixelAudio.setCustomBgmUrl(nextS.customBgmUrl);
+              }
               if (JSON.stringify(prev) === JSON.stringify(nextS)) return prev;
               try {
                 window.localStorage.setItem(
@@ -1032,31 +1042,70 @@ export function useRoomStore() {
 
       setObjects(next);
       persistState(next, projects);
-
-      // If placing a staircase (up or down), automatically build a walkable landing floor deck at that elevation!
-      if (placed.type === 'stairs_up' || placed.type === 'stairs_down') {
-        setRoomSettings((prev) => {
-          const withDeck = generateFloorDeckForStaircase(placed, prev);
-          try {
-            window.localStorage.setItem(
-              STORAGE_KEY_ROOM_SETTINGS,
-              JSON.stringify(withDeck)
-            );
-          } catch {}
-          fetch('/api/room', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ settings: withDeck }),
-          }).catch(() => {});
-          return withDeck;
-        });
-      }
-
       pixelAudio.playPlaceObject();
       return placed;
     },
     [objects, projects, persistState]
   );
+
+  const addCompleteFloorWing = useCallback(
+    (which: 'top' | 'bottom') => {
+      const now = Date.now();
+      lastLocalMutationRef.current = now;
+      setLastSavedAt(now);
+      const { settings: nextSettings, objects: nextObjects } =
+        buildCompleteTerraceFloor(roomSettings, objects, which);
+      setRoomSettings(nextSettings);
+      setObjects(nextObjects);
+      try {
+        window.localStorage.setItem(
+          STORAGE_KEY_ROOM_SETTINGS,
+          JSON.stringify(nextSettings)
+        );
+        window.localStorage.setItem(
+          STORAGE_KEY_OBJECTS,
+          JSON.stringify(nextObjects)
+        );
+      } catch {}
+      fetch('/api/room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          settings: nextSettings,
+          objects: nextObjects,
+          clientUpdatedAt: now,
+        }),
+      }).catch(() => {});
+      pixelAudio.playPlaceObject();
+    },
+    [roomSettings, objects]
+  );
+
+  const clearCustomFloors = useCallback(() => {
+    const now = Date.now();
+    lastLocalMutationRef.current = now;
+    const nextSettings = sanitizeRoomSettings({
+      ...roomSettings,
+      customFloorTiles: [],
+      removedBaseTiles: [],
+    });
+    setRoomSettings(nextSettings);
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY_ROOM_SETTINGS,
+        JSON.stringify(nextSettings)
+      );
+    } catch {}
+    fetch('/api/room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        settings: nextSettings,
+        clientUpdatedAt: now,
+      }),
+    }).catch(() => {});
+    pixelAudio.playConsoleClick();
+  }, [roomSettings]);
 
   const updateObjectVideoUrl = useCallback(
     (targetObjectId: string, rawVideoUrl: string) => {
@@ -1308,8 +1357,20 @@ export function useRoomStore() {
   );
 
   const setCustomBgmAudio = useCallback((url: string | null) => {
+    const now = Date.now();
+    lastLocalMutationRef.current = now;
     setCustomBgmUrlState(url);
     pixelAudio.setCustomBgmUrl(url);
+    setRoomSettings((prev) => {
+      const next = sanitizeRoomSettings({ ...prev, customBgmUrl: url });
+      try {
+        window.localStorage.setItem(
+          STORAGE_KEY_ROOM_SETTINGS,
+          JSON.stringify(next)
+        );
+      } catch {}
+      return next;
+    });
     try {
       if (url) {
         window.localStorage.setItem(STORAGE_KEY_CUSTOM_BGM, url);
@@ -1317,6 +1378,12 @@ export function useRoomStore() {
         window.localStorage.removeItem(STORAGE_KEY_CUSTOM_BGM);
       }
     } catch {}
+    // Persist permanently to the server so all visitors hear the uploaded MP3 until changed in /admin!
+    fetch('/api/room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ customBgmUrl: url, clientUpdatedAt: now }),
+    }).catch(() => {});
   }, []);
 
   const moveObject = useCallback(
@@ -1929,6 +1996,8 @@ export function useRoomStore() {
     setCustomBgmAudio,
     updateRoomSettings,
     paintManualFloorTile,
+    addCompleteFloorWing,
+    clearCustomFloors,
     toggleOwnerSkin,
     addProjectLink,
     resetRoomToDefault,

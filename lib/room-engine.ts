@@ -243,6 +243,7 @@ export interface RoomSettings {
   customFloorTiles?: CustomFloorTile[];
   removedBaseTiles?: string[];
   musicCreator?: string;
+  customBgmUrl?: string | null;
 }
 
 export const DEFAULT_ROOM_SETTINGS: RoomSettings = {
@@ -361,6 +362,151 @@ export function sanitizeRoomSettings(
       typeof input.musicCreator === 'string' && input.musicCreator.trim()
         ? input.musicCreator.trim()
         : 'Higma',
+    customBgmUrl:
+      typeof input.customBgmUrl === 'string' &&
+      input.customBgmUrl.trim().length > 0
+        ? input.customBgmUrl
+        : null,
+  };
+}
+
+/**
+ * Returns the floor story elevation (z) at tile (x, y), so walking onto a Top Floor (+1)
+ * or Bottom Floor (-1) terrace automatically adjusts the avatar's height!
+ */
+export function getFloorElevationAtTile(
+  x: number,
+  y: number,
+  settings?: RoomSettings | null,
+  objects?: RoomObject[]
+): number {
+  const rx = Math.round(x);
+  const ry = Math.round(y);
+  if (objects) {
+    const stair = objects.find(
+      (o) =>
+        o.x === rx &&
+        o.y === ry &&
+        (o.type === 'stairs_up' || o.type === 'stairs_down')
+    );
+    if (stair) {
+      return (stair.z || 0) + (stair.type === 'stairs_up' ? 0.5 : -0.5);
+    }
+  }
+  if (settings?.customFloorTiles && settings.customFloorTiles.length > 0) {
+    const matches = settings.customFloorTiles.filter(
+      (t) => t.x === rx && t.y === ry
+    );
+    if (matches.length > 0) {
+      return matches[matches.length - 1].z;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Idea A: Builds a Complete Connected Split-Level Top Floor (Upstairs z=+1 on East Wing)
+ * or Complete Connected Bottom Floor (Downstairs z=-1 on South Wing), plus a connecting Habbo staircase!
+ */
+export function buildCompleteTerraceFloor(
+  settings: RoomSettings,
+  objects: RoomObject[],
+  which: 'top' | 'bottom'
+): { settings: RoomSettings; objects: RoomObject[] } {
+  const g = settings.gridSize || GRID_SIZE;
+  const existingTiles = [...(settings.customFloorTiles || [])];
+  const nextObjects = [...objects];
+
+  if (which === 'top') {
+    // Complete 8x8 Upstairs Terrace on the East Wing (x = g .. g+6, y = 1 .. 7, z = +1)
+    const filtered = existingTiles.filter(
+      (t) => !(t.z === 1 && t.x >= g && t.x <= g + 6)
+    );
+    const newTiles: CustomFloorTile[] = [...filtered];
+    for (let tx = g; tx <= g + 5; tx++) {
+      for (let ty = 1; ty <= Math.min(g - 2, 7); ty++) {
+        newTiles.push({
+          x: tx,
+          y: ty,
+          z: 1,
+          color: settings.floorColor,
+        });
+      }
+    }
+    // Place or update connecting Staircase Up at (g - 1, 4) facing SE ('se') into the Top Floor
+    const stairX = g - 1;
+    const stairY = Math.min(g - 2, 4);
+    const hasStair = nextObjects.some(
+      (o) => o.type === 'stairs_up' && o.x === stairX && o.y === stairY
+    );
+    if (!hasStair) {
+      nextObjects.push({
+        id: `obj-stairs-top-${Date.now()}`,
+        type: 'stairs_up',
+        label: 'Upstairs Terrace Staircase',
+        x: stairX,
+        y: stairY,
+        z: 0,
+        rotation: 'se',
+        rotationAngle: 0,
+        scale: 1,
+        colorVariant: settings.floorColor,
+        walkable: true,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    return {
+      settings: sanitizeRoomSettings({
+        ...settings,
+        customFloorTiles: newTiles,
+      }),
+      objects: nextObjects,
+    };
+  }
+
+  // Complete 8x6 Downstairs Terrace on the South-West Wing (x = 1 .. 6, y = g .. g+5, z = -1)
+  const filtered = existingTiles.filter(
+    (t) => !(t.z === -1 && t.y >= g && t.y <= g + 6)
+  );
+  const newTiles: CustomFloorTile[] = [...filtered];
+  for (let tx = 1; tx <= Math.min(g - 2, 7); tx++) {
+    for (let ty = g; ty <= g + 5; ty++) {
+      newTiles.push({
+        x: tx,
+        y: ty,
+        z: -1,
+        color: settings.floorColor,
+      });
+    }
+  }
+  // Place or update connecting Staircase Down at (4, g - 1) facing SW ('sw') into the Bottom Floor
+  const stairX = Math.min(g - 2, 4);
+  const stairY = g - 1;
+  const hasStair = nextObjects.some(
+    (o) => o.type === 'stairs_down' && o.x === stairX && o.y === stairY
+  );
+  if (!hasStair) {
+    nextObjects.push({
+      id: `obj-stairs-bottom-${Date.now()}`,
+      type: 'stairs_down',
+      label: 'Downstairs Lounge Staircase',
+      x: stairX,
+      y: stairY,
+      z: 0,
+      rotation: 'sw',
+      rotationAngle: 90,
+      scale: 1,
+      colorVariant: settings.floorColor,
+      walkable: true,
+      createdAt: new Date().toISOString(),
+    });
+  }
+  return {
+    settings: sanitizeRoomSettings({
+      ...settings,
+      customFloorTiles: newTiles,
+    }),
+    objects: nextObjects,
   };
 }
 

@@ -52,10 +52,9 @@ import {
   MIN_OBJECT_SCALE,
   MAX_OBJECT_SCALE,
   HeldDrinkType,
-  FloorPatternType,
   isDrinkDispenserType,
   resolveStaircaseTargetFloor,
-  generateFloorDeckForStaircase,
+  getFloorElevationAtTile,
   hitTestRoomObjectAtScreen,
   clampObjectScale,
   normalizeRotationAngle,
@@ -848,6 +847,12 @@ export default function HabboRoomView() {
         const step = speed * dt;
         if (dist <= step) {
           sim.avatarPos = { x: nextTile.x, y: nextTile.y };
+          sim.avatarZ = getFloorElevationAtTile(
+            nextTile.x,
+            nextTile.y,
+            sim.roomSettings,
+            sim.objects
+          );
           sim.pathQueue.shift();
           pixelAudio.playStep();
 
@@ -950,6 +955,12 @@ export default function HabboRoomView() {
           const stepDist = remoteSpeed * dt;
           if (rdist <= stepDist) {
             ra.pos = { x: nextStep.x, y: nextStep.y };
+            ra.z = getFloorElevationAtTile(
+              nextStep.x,
+              nextStep.y,
+              sim.roomSettings,
+              sim.objects
+            );
             ra.pathQueue.shift();
             if (ra.pathQueue.length === 0) {
               const sitAtEnd = findSittableObjectAtTile(
@@ -1173,37 +1184,36 @@ export default function HabboRoomView() {
       if (o.y + 1 > activeGrid) activeGrid = o.y + 1;
     }
 
-    const zOffsetPx = (sim.activeBuildFloorZ || 0) * 1.35 * 18;
-    const exactGrid = screenToGrid(
-      localX,
-      localY + zOffsetPx,
-      sim.originX,
-      sim.originY
-    );
-    const inBorderZone =
-      exactGrid.x >= -4 &&
-      exactGrid.x <= activeGrid + 6 &&
-      exactGrid.y >= -4 &&
-      exactGrid.y <= activeGrid + 6;
-    const validGrid =
-      (isManualFloorPaintMode && inBorderZone) ||
-      isWithinGrid(
-        exactGrid.x,
-        exactGrid.y,
-        activeGrid,
-        sim.roomSettings?.customFloorTiles,
-        sim.roomSettings?.removedBaseTiles
-      )
-        ? exactGrid
-        : null;
-
-    // 1. If the admin is in "Place Furniture" or "Manual Floor Paint" mode, return the target floor tile directly
-    if (
-      isAdminAuthenticated &&
-      ((isBuildDockOpen && isPlaceOnClickActive) || isManualFloorPaintMode) &&
-      validGrid
-    ) {
-      return { tile: validGrid, obj: null };
+    // Check custom Top Floor (+1), Bottom Floor (-1), and Ground Floor (0) tiles under cursor
+    let validGrid: GridCoord | null = null;
+    for (const testZ of [1, -1, 0]) {
+      const zOffsetPx = testZ * 1.35 * 18;
+      const candidate = screenToGrid(
+        localX,
+        localY + zOffsetPx,
+        sim.originX,
+        sim.originY
+      );
+      if (testZ !== 0) {
+        const hasCustomAtZ = (sim.roomSettings?.customFloorTiles || []).some(
+          (t) => t.x === candidate.x && t.y === candidate.y && t.z === testZ
+        );
+        if (hasCustomAtZ) {
+          validGrid = candidate;
+          break;
+        }
+      } else if (
+        isWithinGrid(
+          candidate.x,
+          candidate.y,
+          activeGrid,
+          sim.roomSettings?.customFloorTiles,
+          sim.roomSettings?.removedBaseTiles
+        )
+      ) {
+        validGrid = candidate;
+        break;
+      }
     }
 
     // 2. Pixel-accurate front-to-back 2D sprite bounding-box hit test for any placed furniture!
@@ -1330,24 +1340,6 @@ export default function HabboRoomView() {
 
     const { tile, obj } = resolvePointerTarget(e.clientX, e.clientY);
     if (!tile) return;
-
-    // If Admin is in Manual Floor Paint Mode, add a floor tile at (tile.x, tile.y, activeBuildFloorZ)
-    if (isAdminAuthenticated && isManualFloorPaintMode) {
-      paintManualFloorTile(
-        tile.x,
-        tile.y,
-        activeBuildFloorZ,
-        e.shiftKey ? 'remove' : 'add',
-        roomSettings.floorColor
-      );
-      return;
-    }
-
-    // If Admin is in Place Furniture mode, place the selected item onto the clicked grid tile
-    if (isAdminAuthenticated && isBuildDockOpen && isPlaceOnClickActive) {
-      handlePlaceFurnitureAtTile(tile.x, tile.y);
-      return;
-    }
 
     if (!obj) {
       const sitAtTile = findSittableObjectAtTile(
@@ -1850,39 +1842,17 @@ export default function HabboRoomView() {
         </div>
 
         {isAdminAuthenticated && (
-          <>
-            <div className="flex items-center gap-1.5">
-              <button
-                type="button"
-                data-testid="room-build-dock-button"
-                onClick={() => {
-                  pixelAudio.playConsoleClick();
-                  setIsBuildDockOpen((prev) => {
-                    const next = !prev;
-                    setIsPlaceOnClickActive(next);
-                    return next;
-                  });
-                }}
-                className={`flex h-6 items-center gap-1 rounded-[3px] border-2 border-black px-2 text-[10px] font-bold transition-colors shadow-[inset_0_1px_0_rgba(255,255,255,0.4)] ${
-                  isBuildDockOpen
-                    ? 'bg-[#D4912A] text-white'
-                    : 'bg-[#E2E2DE] text-black hover:bg-white'
-                }`}
-                style={{ fontFamily: '"Volter", var(--font-pixel), monospace' }}
-              >
-                <Hammer className="h-3 w-3 text-[#D97706]" />
-                <span>{isBuildDockOpen ? 'Close BC' : 'BC Furni'}</span>
-              </button>
-
-              <Link
-                href="/admin"
-                className="flex h-6 items-center gap-1 rounded-[3px] border-2 border-black bg-[#15803D] px-2 text-[10px] font-bold text-white hover:bg-[#16A34A] shadow-[inset_0_1px_0_#4ADE80]"
-                style={{ fontFamily: '"Volter", var(--font-pixel), monospace' }}
-              >
-                <span>Floor Studio (/admin)</span>
-              </Link>
-            </div>
-
+          <div className="flex items-center gap-1.5">
+            <Link
+              href="/admin"
+              className="flex h-6 items-center gap-1 rounded-[3px] border-2 border-black bg-[#15803D] px-2.5 text-[10px] font-bold text-white hover:bg-[#16A34A] shadow-[inset_0_1px_0_#4ADE80]"
+              style={{ fontFamily: '"Volter", var(--font-pixel), monospace' }}
+            >
+              <span>Floor Studio (/admin)</span>
+            </Link>
+          </div>
+        )}
+        {false && (
           <AnimatePresence>
             {isBuildDockOpen && (
               <motion.div
@@ -2242,27 +2212,9 @@ export default function HabboRoomView() {
                 </div>
               </div>
 
-              {/* Classic Habbo Interactive Furniture Controls (Visitor: Sit/Interact only; Admin: Rotate 360° & Pick Up any item) */}
+              {/* Public Room Visitor Interaction Controls (Editing is strictly inside /admin Floor Studio) */}
               {!inspectedObject.id.startsWith('patrol-') ? (
                 <div className="flex items-center justify-between gap-1.5 border border-black bg-[#D9D9CE] px-2 py-1.5">
-                  {isAdminAuthenticated && (
-                    <button
-                      type="button"
-                      data-testid="tooltip-rotate-360"
-                      onClick={() => {
-                        rotateObject(inspectedObject.id, 1);
-                        setInteractionNoticeKey((k) => k + 1);
-                      }}
-                      className="inline-flex items-center gap-1 border border-black bg-[#00748C] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#0089A6]"
-                      title="Rotate furniture 90° (Full 360°)"
-                    >
-                      <RotateCw className="h-3 w-3" />
-                      <span>
-                        Rotate ({inspectedObject.rotation.toUpperCase()})
-                      </span>
-                    </button>
-                  )}
-
                   {isInspectingSofa ? (
                     <button
                       type="button"
@@ -2310,29 +2262,7 @@ export default function HabboRoomView() {
                             : 'Go Down ▼'}
                         </span>
                       </button>
-                      {isAdminAuthenticated && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const { targetZ } =
-                              resolveStaircaseTargetFloor(inspectedObject);
-                            const updated = generateFloorDeckForStaircase(
-                              inspectedObject,
-                              roomSettings
-                            );
-                            updateRoomSettings({
-                              customFloorTiles: updated.customFloorTiles,
-                            });
-                            setActiveBuildFloorZ(targetZ);
-                            setIsManualFloorPaintMode(true);
-                          }}
-                          className="inline-flex items-center gap-1 border border-black bg-[#15803D] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-[#16A34A]"
-                          title="Build walkable floor tiles at the top/bottom of this staircase"
-                        >
-                          <span>+ Build Floor</span>
-                        </button>
-                      )}
-                    </div>
+                      </div>
                   ) : isDrinkDispenserType(inspectedObject.type) ? (
                     <button
                       type="button"
@@ -2375,25 +2305,9 @@ export default function HabboRoomView() {
                     </button>
                   )}
 
-                  {isAdminAuthenticated && (
-                    <button
-                      type="button"
-                      data-testid="tooltip-pickup-item"
-                      onClick={() => {
-                        removeObject(inspectedObject.id);
-                        setInspectedObjectState(null);
-                        simRef.current.selectedObjectId = null;
-                      }}
-                      className="inline-flex items-center gap-1 border border-black bg-[#C93B2B] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-red-600"
-                      title="Remove furniture item"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                      <span>Pick Up</span>
-                    </button>
-                  )}
-                </div>
+                  </div>
               ) : (
-                /* Roaming Animal Inspector Controls (Admin can remove the animal!) */
+                /* Roaming Animal Inspector Controls */
                 <div className="flex items-center justify-between gap-1.5 border border-black bg-[#D9D9CE] px-2 py-1.5">
                   <button
                     type="button"
@@ -2401,7 +2315,7 @@ export default function HabboRoomView() {
                     onClick={() => {
                       walkAvatarTo(inspectedObject.x, inspectedObject.y, null);
                       pushChatBubble(
-                        'Higma',
+                        activeSpeakerName,
                         `*pets ${inspectedObject.label}*`,
                         'avatar'
                       );
@@ -2410,32 +2324,11 @@ export default function HabboRoomView() {
                   >
                     <span>Pet Animal</span>
                   </button>
-
-                  {isAdminAuthenticated && (
-                    <button
-                      type="button"
-                      data-testid="tooltip-remove-pet"
-                      onClick={() => {
-                        const rawPetId = inspectedObject.id.replace(
-                          /^patrol-/,
-                          ''
-                        );
-                        removePet(rawPetId);
-                        setInspectedObjectState(null);
-                        simRef.current.selectedObjectId = null;
-                      }}
-                      className="inline-flex items-center gap-1 border border-black bg-[#C93B2B] px-2 py-0.5 text-[10px] font-bold text-white hover:bg-red-600"
-                      title="Remove this animal from the room"
-                    >
-                      <Trash2 className="h-3 w-3" />
-                      <span>Remove Animal</span>
-                    </button>
-                  )}
                 </div>
               )}
 
-              {/* Full Admin Freedom Controls: Move Nudge, Elevation (Z+/Z-), Scale & Rotation right inside the room! */}
-              {isAdminAuthenticated &&
+              {false &&
+                isAdminAuthenticated &&
                 !inspectedObject.id.startsWith('patrol-') && (
                   <div
                     data-testid="tooltip-admin-transform-sliders"
@@ -2702,7 +2595,7 @@ export default function HabboRoomView() {
                     </div>
                   </div>
 
-                  {isAdminAuthenticated ? (
+                  {false ? (
                     <form
                       onSubmit={(e) => {
                         e.preventDefault();
