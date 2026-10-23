@@ -19,8 +19,10 @@ import {
   InventoryItem,
   InventoryStackLayer,
   RoomSettings,
+  RoomPlayerPresence,
   sanitizeRoomSettings,
   isWallPosterType,
+  pruneStalePlayers,
   getNextStackHeightAtTile,
   filterActiveChatBubbles,
   applyTilePlacement,
@@ -306,6 +308,7 @@ export function useRoomStore() {
   const [avatarAction, setAvatarAction] = useState<'none' | 'wave' | 'dance'>(
     'none'
   );
+  const [remotePlayers, setRemotePlayers] = useState<RoomPlayerPresence[]>([]);
   const [isLoaded, setIsLoaded] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
@@ -319,6 +322,22 @@ export function useRoomStore() {
   const lastLocalMutationRef = useRef<number>(0);
   const syncPostTimerRef = useRef<number | null>(null);
   const seenChatIdsRef = useRef<Set<string>>(new Set());
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const localCoordsRef = useRef<{
+    x: number;
+    y: number;
+    targetX: number;
+    targetY: number;
+    facing: IsometricRotation;
+    isSitting: boolean;
+  }>({
+    x: 4,
+    y: 5,
+    targetX: 4,
+    targetY: 5,
+    facing: 'sw',
+    isSitting: false,
+  });
 
   useEffect(() => {
     let hasLocalObjects = false;
@@ -428,6 +447,13 @@ export function useRoomStore() {
           if (data.settings) {
             setRoomSettings(sanitizeRoomSettings(data.settings));
           }
+          if (Array.isArray(data.players)) {
+            setRemotePlayers(
+              pruneStalePlayers(data.players).filter(
+                (p: RoomPlayerPresence) => p.id !== visitorAvatar.id
+              )
+            );
+          }
         } else if (hasLocalObjects && !data.hasCustomState) {
           // Re-seed serverless memory after a Vercel cold start from local custom state
           try {
@@ -463,17 +489,161 @@ export function useRoomStore() {
     setIsLoaded(true);
   }, []);
 
-  // Poll /api/room every 4.5s (and skip when tab is hidden) to optimize Vercel Free Tier invocations
+  // Build current local player presence snapshot
+  const buildLocalPresence = useCallback(
+    (
+      overrides?: Partial<{
+        x: number;
+        y: number;
+        targetX: number;
+        targetY: number;
+        facing: IsometricRotation;
+        isSitting: boolean;
+        action: 'none' | 'wave' | 'dance';
+        name: string;
+        isOwner: boolean;
+        avatar: VisitorAvatarProfile;
+      }>
+    ): RoomPlayerPresence => {
+      const c = localCoordsRef.current;
+      const effAvatar = overrides?.avatar || visitorAvatar;
+      const effOwner = overrides?.isOwner ?? useOwnerSkin;
+      const effName = overrides?.name || (effOwner ? 'Higma' : effAvatar.name);
+      return {
+        id: effAvatar.id,
+        name: effName,
+        isOwner: effOwner,
+        x: overrides?.x ?? c.x,
+        y: overrides?.y ?? c.y,
+        targetX: overrides?.targetX ?? c.targetX,
+        targetY: overrides?.targetY ?? c.targetY,
+        facing: overrides?.facing ?? c.facing,
+        isSitting: overrides?.isSitting ?? c.isSitting,
+        action: overrides?.action ?? avatarAction,
+        avatar: effAvatar,
+        lastSeenAt: Date.now(),
+      };
+    },
+    [visitorAvatar, useOwnerSkin, avatarAction]
+  );
+
+  // Instant 0ms multi-tab BroadcastChannel + beforeunload disconnect beacon
   useEffect(() => {
-    const syncTimer = window.setInterval(() => {
+    if (typeof window === 'undefined') return;
+
+    if ('BroadcastChannel' in window) {
+      const bc = new BroadcastChannel('habbofolio_multiplayer_v1');
+      broadcastChannelRef.current = bc;
+      bc.onmessage = (ev) => {
+        const msg = ev.data;
+        if (!msg || typeof msg !== 'object') return;
+        if (msg.type === 'presence' && msg.player?.id !== visitorAvatar.id) {
+          const incoming = msg.player as RoomPlayerPresence;
+          setRemotePlayers((prev) => {
+            const others = prev.filter((p) => p.id !== incoming.id);
+            return pruneStalePlayers([
+              ...others,
+              { ...incoming, lastSeenAt: Date.now() },
+            ]);
+          });
+        } else if (
+          msg.type === 'leave' &&
+          typeof msg.playerId === 'string'
+        ) {
+          setRemotePlayers((prev) =>
+            prev.filter((p) => p.id !== msg.playerId)
+          );
+        } else if (
+          msg.type === 'chat' &&
+          msg.bubble?.id &&
+          !seenChatIdsRef.current.has(msg.bubble.id)
+        ) {
+          seenChatIdsRef.current.add(msg.bubble.id);
+          pixelAudio.playChatPop(false);
+          setChatBubbles((prev) => [
+            ...prev.slice(-4),
+            { ...msg.bubble, createdAt: Date.now() },
+          ]);
+          setChatHistory((prev) => [...prev.slice(-30), msg.bubble]);
+        }
+      };
+    }
+
+    const handleBeforeUnload = () => {
+      try {
+        broadcastChannelRef.current?.postMessage({
+          type: 'leave',
+          playerId: visitorAvatar.id,
+        });
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(
+            '/api/room',
+            JSON.stringify({ leavePlayerId: visitorAvatar.id })
+          );
+        }
+      } catch {}
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      broadcastChannelRef.current?.close();
+      broadcastChannelRef.current = null;
+    };
+  }, [visitorAvatar.id]);
+
+  // Multiplayer presence heartbeat & room state sync every 950ms (skips when tab is hidden)
+  useEffect(() => {
+    if (!isLoaded) return;
+
+    const sendHeartbeatAndSync = () => {
       if (typeof document !== 'undefined' && document.hidden) return;
-      // Skip polling overwrite while admin is actively dragging real-time sliders
-      if (Date.now() - lastLocalMutationRef.current < 2500) return;
-      fetch('/api/room')
+      const presence = buildLocalPresence();
+
+      fetch('/api/room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerPresence: presence }),
+      })
         .then((res) => (res.ok ? res.json() : null))
         .then((data) => {
-          if (!data || !data.hasCustomState) return;
-          if (Date.now() - lastLocalMutationRef.current < 2500) return;
+          if (!data) return;
+
+          if (Array.isArray(data.players)) {
+            setRemotePlayers(
+              pruneStalePlayers(data.players).filter(
+                (p: RoomPlayerPresence) => p.id !== visitorAvatar.id
+              )
+            );
+          }
+
+          if (Array.isArray(data.chatLog)) {
+            data.chatLog.forEach((remoteBubble: ChatBubble) => {
+              if (
+                !remoteBubble?.id ||
+                seenChatIdsRef.current.has(remoteBubble.id)
+              ) {
+                return;
+              }
+              seenChatIdsRef.current.add(remoteBubble.id);
+              if (Date.now() - remoteBubble.createdAt < 12000) {
+                pixelAudio.playChatPop(false);
+                setChatBubbles((prev) => [
+                  ...prev.slice(-4),
+                  { ...remoteBubble, createdAt: Date.now() },
+                ]);
+                setChatHistory((prev) => [...prev.slice(-30), remoteBubble]);
+              }
+            });
+          }
+
+          // Skip overwriting furniture/settings while admin is actively dragging sliders
+          if (
+            !data.hasCustomState ||
+            Date.now() - lastLocalMutationRef.current < 2500
+          ) {
+            return;
+          }
           if (Array.isArray(data.objects)) {
             setObjects((prev) => {
               const prevJson = JSON.stringify(prev);
@@ -509,26 +679,14 @@ export function useRoomStore() {
               return nextS;
             });
           }
-          if (Array.isArray(data.chatLog)) {
-            data.chatLog.forEach((remoteBubble: ChatBubble) => {
-              if (!remoteBubble?.id || seenChatIdsRef.current.has(remoteBubble.id)) {
-                return;
-              }
-              seenChatIdsRef.current.add(remoteBubble.id);
-              if (Date.now() - remoteBubble.createdAt < 12000) {
-                setChatBubbles((prev) => [
-                  ...prev.slice(-4),
-                  { ...remoteBubble, createdAt: Date.now() },
-                ]);
-                setChatHistory((prev) => [...prev.slice(-30), remoteBubble]);
-              }
-            });
-          }
-        })
+          })
         .catch(() => {});
-    }, 4500);
+    };
+
+    sendHeartbeatAndSync();
+    const syncTimer = window.setInterval(sendHeartbeatAndSync, 950);
     return () => window.clearInterval(syncTimer);
-  }, []);
+  }, [isLoaded, buildLocalPresence, visitorAvatar.id]);
 
   // Automatically remove interaction notification bubbles after 4.2 seconds
   useEffect(() => {
@@ -739,45 +897,168 @@ export function useRoomStore() {
     [objects, projects, persistState]
   );
 
+  const broadcastLocalMove = useCallback(
+    (update: {
+      x: number;
+      y: number;
+      targetX: number;
+      targetY: number;
+      facing: IsometricRotation;
+      isSitting?: boolean;
+      action?: 'none' | 'wave' | 'dance';
+    }) => {
+      localCoordsRef.current = {
+        x: update.x,
+        y: update.y,
+        targetX: update.targetX,
+        targetY: update.targetY,
+        facing: update.facing,
+        isSitting: Boolean(update.isSitting),
+      };
+      const presence = buildLocalPresence({
+        x: update.x,
+        y: update.y,
+        targetX: update.targetX,
+        targetY: update.targetY,
+        facing: update.facing,
+        isSitting: Boolean(update.isSitting),
+        action: update.action,
+      });
+      try {
+        broadcastChannelRef.current?.postMessage({
+          type: 'presence',
+          player: presence,
+        });
+      } catch {}
+      fetch('/api/room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerPresence: presence }),
+      }).catch(() => {});
+    },
+    [buildLocalPresence]
+  );
+
   const randomizeVisitorAvatar = useCallback(() => {
     const fresh = generateRandomVisitorAvatar();
-    setVisitorAvatar(fresh);
+    // Keep same visitor session id so remote clients don't duplicate the avatar
+    const updatedAvatar: VisitorAvatarProfile = {
+      ...fresh,
+      id: visitorAvatar.id,
+      name: visitorAvatar.name.startsWith('PixelGuest') ||
+        visitorAvatar.name.startsWith('HabboVoyager') ||
+        visitorAvatar.name.startsWith('RetroNomad') ||
+        visitorAvatar.name.startsWith('ClubWalker') ||
+        visitorAvatar.name.startsWith('VoxelExplorer') ||
+        visitorAvatar.name.startsWith('LoungeVisitor') ||
+        visitorAvatar.name.startsWith('NeonCitizen') ||
+        visitorAvatar.name.startsWith('IsoTraveler')
+        ? fresh.name
+        : visitorAvatar.name,
+    };
+    setVisitorAvatar(updatedAvatar);
     setUseOwnerSkin(false);
     try {
       window.sessionStorage.setItem(
         STORAGE_KEY_VISITOR_AVATAR,
-        JSON.stringify(fresh)
+        JSON.stringify(updatedAvatar)
       );
     } catch {}
+    const presence = buildLocalPresence({
+      avatar: updatedAvatar,
+      isOwner: false,
+      name: updatedAvatar.name,
+    });
+    try {
+      broadcastChannelRef.current?.postMessage({
+        type: 'presence',
+        player: presence,
+      });
+    } catch {}
+    fetch('/api/room', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playerPresence: presence }),
+    }).catch(() => {});
     pixelAudio.playPlaceObject();
-    return fresh;
-  }, []);
+    return updatedAvatar;
+  }, [visitorAvatar.id, visitorAvatar.name, buildLocalPresence]);
 
   const toggleOwnerSkin = useCallback(() => {
-    setUseOwnerSkin((prev) => !prev);
+    setUseOwnerSkin((prev) => {
+      const next = !prev;
+      const presence = buildLocalPresence({
+        isOwner: next,
+        name: next ? 'Higma' : visitorAvatar.name,
+      });
+      try {
+        broadcastChannelRef.current?.postMessage({
+          type: 'presence',
+          player: presence,
+        });
+      } catch {}
+      fetch('/api/room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerPresence: presence }),
+      }).catch(() => {});
+      return next;
+    });
     pixelAudio.playConsoleClick();
-  }, []);
+  }, [buildLocalPresence, visitorAvatar.name]);
 
-  const updateVisitorUsername = useCallback((newName: string) => {
-    const cleaned = newName.trim().slice(0, 22);
-    if (!cleaned) return;
-    setVisitorAvatar((prev) => {
-      const updated = { ...prev, name: cleaned };
+  const updateVisitorUsername = useCallback(
+    (newName: string) => {
+      const cleaned = newName.trim().slice(0, 22);
+      if (!cleaned) return;
+      const updated = { ...visitorAvatar, name: cleaned };
+      setVisitorAvatar(updated);
       try {
         window.sessionStorage.setItem(
           STORAGE_KEY_VISITOR_AVATAR,
           JSON.stringify(updated)
         );
       } catch {}
-      return updated;
-    });
-    setUseOwnerSkin(false);
-    pixelAudio.playConsoleClick();
-  }, []);
+      setUseOwnerSkin(false);
+      const presence = buildLocalPresence({
+        avatar: updated,
+        name: cleaned,
+        isOwner: false,
+      });
+      try {
+        broadcastChannelRef.current?.postMessage({
+          type: 'presence',
+          player: presence,
+        });
+      } catch {}
+      fetch('/api/room', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ playerPresence: presence }),
+      }).catch(() => {});
+      pixelAudio.playConsoleClick();
+    },
+    [visitorAvatar, buildLocalPresence]
+  );
 
   const triggerAvatarAction = useCallback(
     (action: 'none' | 'wave' | 'dance') => {
-      setAvatarAction((prev) => (prev === action && action === 'dance' ? 'none' : action));
+      setAvatarAction((prev) => {
+        const next = prev === action && action === 'dance' ? 'none' : action;
+        const presence = buildLocalPresence({ action: next });
+        try {
+          broadcastChannelRef.current?.postMessage({
+            type: 'presence',
+            player: presence,
+          });
+        } catch {}
+        fetch('/api/room', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ playerPresence: presence }),
+        }).catch(() => {});
+        return next;
+      });
       pixelAudio.playPlaceObject();
       if (action === 'wave') {
         window.setTimeout(() => {
@@ -785,7 +1066,7 @@ export function useRoomStore() {
         }, 2400);
       }
     },
-    []
+    [buildLocalPresence]
   );
 
   const moveObject = useCallback(
@@ -1271,6 +1552,12 @@ export function useRoomStore() {
       setChatHistory((prev) => [...prev.slice(-30), newBubble]);
 
       if (speakerType === 'avatar') {
+        try {
+          broadcastChannelRef.current?.postMessage({
+            type: 'chat',
+            bubble: newBubble,
+          });
+        } catch {}
         fetch('/api/room', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1340,6 +1627,7 @@ export function useRoomStore() {
     chatBubbles,
     chatHistory,
     avatarAction,
+    remotePlayers,
     isLoaded,
     isAdminAuthenticated,
     isMuted,
@@ -1370,6 +1658,7 @@ export function useRoomStore() {
     placeInventoryStackAtTile,
     resetInventoryToDefault,
     updateObjectVideoUrl,
+    broadcastLocalMove,
     randomizeVisitorAvatar,
     updateVisitorUsername,
     triggerAvatarAction,

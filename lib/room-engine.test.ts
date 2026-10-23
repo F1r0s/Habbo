@@ -43,6 +43,9 @@ import {
   isWallPosterType,
   DEFAULT_POSTER_IMAGES,
   sanitizeRoomSettings,
+  pruneStalePlayers,
+  pickWalkableSpawnTile,
+  generateRandomVisitorAvatar,
   OBJECT_CATALOG,
   DEFAULT_ROOM_OBJECTS,
   ORGANIZED_ROOM_OBJECTS,
@@ -646,5 +649,48 @@ test('sanitizeRoomSettings supports expanding room grid size (10x10 to 16x16) an
   // Open-Hotel spotlight & candle are registered in OBJECT_CATALOG
   assert.ok(OBJECT_CATALOG.gold_spotlight);
   assert.ok(OBJECT_CATALOG.habbo_candle);
+});
+
+test('multiplayer pruneStalePlayers and pickWalkableSpawnTile manage concurrent room visitors', () => {
+  const now = 50000;
+  const activeAvatar = generateRandomVisitorAvatar(() => 0.2);
+  const players = [
+    {
+      id: 'p1',
+      name: 'Salim',
+      isOwner: false,
+      x: 4,
+      y: 5,
+      targetX: 4,
+      targetY: 5,
+      facing: 'sw' as const,
+      isSitting: false,
+      action: 'none' as const,
+      avatar: activeAvatar,
+      lastSeenAt: now - 2000,
+    },
+    {
+      id: 'p2-stale',
+      name: 'OldGuest',
+      isOwner: false,
+      x: 3,
+      y: 6,
+      targetX: 3,
+      targetY: 6,
+      facing: 'se' as const,
+      isSitting: false,
+      action: 'none' as const,
+      avatar: activeAvatar,
+      lastSeenAt: now - 25000,
+    },
+  ];
+
+  const pruned = pruneStalePlayers(players, now, 14000);
+  assert.equal(pruned.length, 1);
+  assert.equal(pruned[0].id, 'p1');
+
+  // Since p1 is occupying (4, 5), pickWalkableSpawnTile chooses a distinct walkable tile
+  const nextSpawn = pickWalkableSpawnTile(DEFAULT_ROOM_OBJECTS, pruned, 10);
+  assert.notDeepEqual(nextSpawn, { x: 4, y: 5 });
 });
 

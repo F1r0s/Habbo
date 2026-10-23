@@ -944,14 +944,16 @@ function recolorHabboAvatarCanvas(
 
       const lum = (r * 0.299 + g * 0.587 + b * 0.114) / 175;
 
-      // Top crown area (y < 15): if visitor doesn't have crown accessory, tint as hair/cap
-      if (y < 15 && !keepCrown) {
-        if (r > 130 && g > 95 && b < 120) {
-          d[idx] = Math.min(255, Math.round(hr * lum));
-          d[idx + 1] = Math.min(255, Math.round(hg * lum));
-          d[idx + 2] = Math.min(255, Math.round(hb * lum));
+      // Top royal crown region (y < 19): remove tall crown for regular visitors so they have a clean Habbo head/hair
+      if (y < 19 && !keepCrown) {
+        if (y < 15) {
+          d[idx + 3] = 0;
           continue;
         }
+        d[idx] = Math.min(255, Math.round(hr * lum));
+        d[idx + 1] = Math.min(255, Math.round(hg * lum));
+        d[idx + 2] = Math.min(255, Math.round(hb * lum));
+        continue;
       }
 
       // Hair region (y = 12..37): silver-grey hair pixels

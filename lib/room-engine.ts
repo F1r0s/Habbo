@@ -699,6 +699,56 @@ export interface VisitorAvatarProfile {
   createdAt: string;
 }
 
+export interface RoomPlayerPresence {
+  id: string;
+  name: string;
+  isOwner: boolean;
+  x: number;
+  y: number;
+  targetX: number;
+  targetY: number;
+  facing: IsometricRotation;
+  isSitting: boolean;
+  action: 'none' | 'wave' | 'dance';
+  avatar: VisitorAvatarProfile;
+  lastSeenAt: number;
+}
+
+export function pruneStalePlayers(
+  players: RoomPlayerPresence[],
+  nowMs: number = Date.now(),
+  maxAgeMs: number = 14000
+): RoomPlayerPresence[] {
+  return players.filter((p) => nowMs - p.lastSeenAt <= maxAgeMs);
+}
+
+export function pickWalkableSpawnTile(
+  objects: RoomObject[],
+  existingPlayers: RoomPlayerPresence[],
+  gridSize: number = GRID_SIZE
+): GridCoord {
+  const candidates: GridCoord[] = [
+    { x: 4, y: 5 },
+    { x: 3, y: 6 },
+    { x: 5, y: 6 },
+    { x: 4, y: 4 },
+    { x: 5, y: 4 },
+    { x: 3, y: 4 },
+    { x: 2, y: 6 },
+    { x: 4, y: 6 },
+    { x: 5, y: 7 },
+    { x: 2, y: 5 },
+  ];
+  for (const tile of candidates) {
+    if (!isTileWalkable(tile.x, tile.y, objects, gridSize)) continue;
+    const occupiedByPlayer = existingPlayers.some(
+      (p) => Math.round(p.x) === tile.x && Math.round(p.y) === tile.y
+    );
+    if (!occupiedByPlayer) return tile;
+  }
+  return { x: 4, y: 5 };
+}
+
 const VISITOR_NAME_PREFIXES = [
   'PixelGuest',
   'HabboVoyager',

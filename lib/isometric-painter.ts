@@ -145,6 +145,18 @@ export interface RenderRoomParams {
   visitorAvatar?: VisitorAvatarProfile | null;
   roomSettings?: RoomSettings;
   avatarAction?: 'none' | 'wave' | 'dance';
+  remoteAvatars?: RenderedRemoteAvatar[];
+}
+
+export interface RenderedRemoteAvatar {
+  id: string;
+  name: string;
+  pos: { x: number; y: number };
+  facing: IsometricRotation;
+  isWalking: boolean;
+  isSitting: boolean;
+  action: 'none' | 'wave' | 'dance';
+  visitorAvatar: VisitorAvatarProfile | null;
 }
 
 function drawIsoDiamond(
@@ -2264,6 +2276,36 @@ function drawHabboAvatar(
         );
       }
       ctx.restore();
+
+      if (avatarAction === 'wave') {
+        const waveLift = Math.round(Math.sin(tick * 0.45) * 3);
+        ctx.save();
+        ctx.font = 'bold 9px "Volter", monospace';
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(Math.round(sx + 10), Math.round(drawY + 8 + waveLift), 18, 13);
+        ctx.fillStyle = '#FACC15';
+        ctx.fillRect(Math.round(sx + 11), Math.round(drawY + 9 + waveLift), 16, 11);
+        ctx.fillStyle = '#000000';
+        ctx.textAlign = 'center';
+        ctx.fillText('o/', Math.round(sx + 19), Math.round(drawY + 17 + waveLift));
+        ctx.restore();
+      }
+
+      ctx.save();
+      ctx.font = 'bold 8px "Volter", monospace';
+      const tw = Math.ceil(ctx.measureText(activeDisplayName).width) + 8;
+      const th = 12;
+      const tx = Math.round(sx - tw / 2);
+      const ty = Math.round(drawY - 12);
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(tx - 1, ty, tw + 2, th);
+      ctx.fillRect(tx, ty - 1, tw, th + 2);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(tx, ty, tw, th);
+      ctx.fillStyle = '#000000';
+      ctx.textAlign = 'center';
+      ctx.fillText(activeDisplayName, Math.round(sx), ty + 9);
+      ctx.restore();
       return;
     }
   }
@@ -2379,28 +2421,37 @@ function drawHabboChatBubbles(
   ctx: CanvasRenderingContext2D,
   chatBubbles: ChatBubble[],
   originX: number,
-  originY: number
+  originY: number,
+  localAvatarPos: { x: number; y: number },
+  localSpeakerName: string,
+  remoteAvatars: RenderedRemoteAvatar[] = []
 ) {
   if (!chatBubbles || chatBubbles.length === 0) return;
   const atlas = getHabboSpriteAtlas();
   const now = Date.now();
-  const ttlMs = 4200;
+  const ttlMs = 4800;
 
   const activeBubbles = chatBubbles
     .filter((b) => now - b.createdAt < ttlMs)
-    .slice(-5);
+    .slice(-6);
 
   if (activeBubbles.length === 0) return;
 
-  const baseStartY = Math.max(40, originY - 165);
+  // Resolve each bubble's horizontal X and starting Y directly above the speaking character's head
+  const total = activeBubbles.length;
 
   activeBubbles.forEach((bubble, idx) => {
     const ageMs = Math.max(0, now - bubble.createdAt);
-    const floatRisePx = Math.round((ageMs / 1000) * 16);
-    const fadeStartMs = ttlMs - 850;
+    // Smoothly rise upward from the top of the speaker's head as the message ages
+    const floatRisePx = Math.round((ageMs / 1000) * 28);
+    // Older messages in the stack sit higher above newer messages
+    const newerCountAfterThis = total - 1 - idx;
+    const stackLiftPx = newerCountAfterThis * 24;
+
+    const fadeStartMs = ttlMs - 900;
     const alpha =
       ageMs > fadeStartMs
-        ? Math.max(0, 1 - (ageMs - fadeStartMs) / 850)
+        ? Math.max(0, 1 - (ageMs - fadeStartMs) / 900)
         : 1;
 
     if (alpha <= 0.02) return;
@@ -2409,8 +2460,32 @@ function drawHabboChatBubbles(
     ctx.globalAlpha = alpha;
 
     const isCat = bubble.speakerType === 'cat';
-    const bx = isCat ? originX - 88 : originX + 18;
-    const by = baseStartY + idx * 26 - floatRisePx;
+    let speakerTile = localAvatarPos;
+    if (isCat) {
+      speakerTile = { x: 3, y: 6 };
+    } else if (
+      bubble.speaker.toLowerCase() !== localSpeakerName.toLowerCase()
+    ) {
+      const matchedRemote = remoteAvatars.find(
+        (ra) => ra.name.toLowerCase() === bubble.speaker.toLowerCase()
+      );
+      if (matchedRemote) {
+        speakerTile = matchedRemote.pos;
+      }
+    }
+
+    const { sx: speakerSx, sy: speakerSy } = gridToScreen(
+      speakerTile.x,
+      speakerTile.y,
+      0.2,
+      originX,
+      originY
+    );
+
+    // Start right above the character's head & name tag, then float upward
+    const headTopY = speakerSy - 90;
+    const bx = speakerSx;
+    const by = Math.max(16, headTopY - stackLiftPx - floatRisePx);
 
     ctx.font = 'bold 9px "Volter", monospace';
     const speakerLabel = `${bubble.speaker}: `;
@@ -2485,6 +2560,7 @@ export function renderIsometricRoom(params: RenderRoomParams) {
     visitorAvatar = null,
     roomSettings = DEFAULT_ROOM_SETTINGS,
     avatarAction = 'none',
+    remoteAvatars = [],
   } = params;
 
   ctx.imageSmoothingEnabled = false;
@@ -2524,11 +2600,31 @@ export function renderIsometricRoom(params: RenderRoomParams) {
     );
   }
 
-  // 3. Depth-sort all room objects + avatar using painter's algorithm
+  // 3. Depth-sort all room objects + all connected players using painter's algorithm
   const sorted = sortObjectsForRender(objects);
-  const avatarDepth =
-    (avatarPos.x + avatarPos.y) * 100 + (isAvatarSitting ? 55 : 25);
-  let avatarDrawn = false;
+
+  const allAvatarsToDraw = [
+    {
+      pos: avatarPos,
+      facing: avatarFacing,
+      isWalking: isAvatarWalking,
+      isSitting: isAvatarSitting,
+      action: avatarAction,
+      visitorAvatar,
+      depth: (avatarPos.x + avatarPos.y) * 100 + (isAvatarSitting ? 55 : 25),
+    },
+    ...remoteAvatars.map((ra) => ({
+      pos: ra.pos,
+      facing: ra.facing,
+      isWalking: ra.isWalking,
+      isSitting: ra.isSitting,
+      action: ra.action,
+      visitorAvatar: ra.visitorAvatar,
+      depth: (ra.pos.x + ra.pos.y) * 100 + (ra.isSitting ? 55 : 25),
+    })),
+  ].sort((a, b) => a.depth - b.depth);
+
+  let nextAvatarIdx = 0;
 
   for (const obj of sorted) {
     const isFloorRug = obj.type.startsWith('luxury_rug');
@@ -2537,21 +2633,25 @@ export function renderIsometricRoom(params: RenderRoomParams) {
       (obj.x + obj.y) * 100 +
       (isFloorRug ? -50 : isWallPoster ? -40 : obj.z * 10);
 
-    if (!avatarDrawn && avatarDepth < objDepth) {
+    while (
+      nextAvatarIdx < allAvatarsToDraw.length &&
+      allAvatarsToDraw[nextAvatarIdx].depth < objDepth
+    ) {
+      const av = allAvatarsToDraw[nextAvatarIdx];
       drawHabboAvatar(
         ctx,
-        avatarPos,
-        avatarFacing,
-        isAvatarWalking,
-        isAvatarSitting,
+        av.pos,
+        av.facing,
+        av.isWalking,
+        av.isSitting,
         originX,
         originY,
         tick,
         timeTheme.avatarShadowAlpha,
-        visitorAvatar,
-        avatarAction
+        av.visitorAvatar,
+        av.action
       );
-      avatarDrawn = true;
+      nextAvatarIdx += 1;
     }
 
     drawRoomObject(
@@ -2567,20 +2667,22 @@ export function renderIsometricRoom(params: RenderRoomParams) {
     );
   }
 
-  if (!avatarDrawn) {
+  while (nextAvatarIdx < allAvatarsToDraw.length) {
+    const av = allAvatarsToDraw[nextAvatarIdx];
     drawHabboAvatar(
       ctx,
-      avatarPos,
-      avatarFacing,
-      isAvatarWalking,
-      isAvatarSitting,
+      av.pos,
+      av.facing,
+      av.isWalking,
+      av.isSitting,
       originX,
       originY,
       tick,
       timeTheme.avatarShadowAlpha,
-      visitorAvatar,
-      avatarAction
+      av.visitorAvatar,
+      av.action
     );
+    nextAvatarIdx += 1;
   }
 
   // 3b. Live translucent ghost preview when dragging or hovering in Builder
@@ -2603,6 +2705,15 @@ export function renderIsometricRoom(params: RenderRoomParams) {
   ctx.fill();
   ctx.restore();
 
-  // 5. Floating Habbo Chat Bubbles above the room (auto-rising & fading)
-  drawHabboChatBubbles(ctx, chatBubbles, originX, originY);
+  // 5. Floating Habbo Chat Bubbles starting right above the speaker's head and rising upward
+  const localSpeakerName = visitorAvatar ? visitorAvatar.name : 'Higma';
+  drawHabboChatBubbles(
+    ctx,
+    chatBubbles,
+    originX,
+    originY,
+    avatarPos,
+    localSpeakerName,
+    remoteAvatars
+  );
 }

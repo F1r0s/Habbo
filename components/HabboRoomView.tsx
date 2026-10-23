@@ -54,10 +54,12 @@ import {
   clampObjectScale,
   normalizeRotationAngle,
   angleToIsometricRotation,
+  pickWalkableSpawnTile,
 } from '@/lib/room-engine';
 import {
   renderIsometricRoom,
   renderFurniSlotThumbnail,
+  RenderedRemoteAvatar,
 } from '@/lib/isometric-painter';
 import { loadHabboSpriteAtlas } from '@/lib/habbo-sprites';
 import { useRoomStore, pixelAudio } from '@/lib/use-room-store';
@@ -198,6 +200,7 @@ export default function HabboRoomView() {
     chatBubbles,
     chatHistory,
     avatarAction,
+    remotePlayers,
     isAdminAuthenticated,
     isMuted,
     isMusicPlaying,
@@ -207,6 +210,7 @@ export default function HabboRoomView() {
     rotateObject,
     updateObjectTransform,
     updateObjectVideoUrl,
+    broadcastLocalMove,
     randomizeVisitorAvatar,
     updateVisitorUsername,
     triggerAvatarAction,
@@ -323,6 +327,12 @@ export default function HabboRoomView() {
     : null;
 
   // Mutable simulation state stored in ref so 60Hz loop never triggers React re-renders
+  const hasPickedInitialSpawnRef = useRef<boolean>(false);
+  const broadcastLocalMoveRef = useRef(broadcastLocalMove);
+  useEffect(() => {
+    broadcastLocalMoveRef.current = broadcastLocalMove;
+  }, [broadcastLocalMove]);
+
   const simRef = useRef({
     objects,
     projects,
@@ -335,6 +345,21 @@ export default function HabboRoomView() {
     isAvatarSitting: false,
     pendingSitObject: null as RoomObject | null,
     pathQueue: [] as GridCoord[],
+    remoteSimMap: {} as Record<
+      string,
+      {
+        id: string;
+        name: string;
+        pos: { x: number; y: number };
+        targetX: number;
+        targetY: number;
+        pathQueue: GridCoord[];
+        facing: IsometricRotation;
+        isSitting: boolean;
+        action: 'none' | 'wave' | 'dance';
+        visitorAvatar: VisitorAvatarProfile | null;
+      }
+    >,
     hoveredTile: null as GridCoord | null,
     hoveredObjectId: null as string | null,
     selectedObjectId: null as string | null,
@@ -426,6 +451,111 @@ export default function HabboRoomView() {
     return () => window.clearTimeout(timer);
   }, [inspectedObjectState, interactionNoticeKey, isTooltipHovered]);
 
+  // Sync incoming remotePlayers into simRef.current.remoteSimMap with smooth pathfinding interpolation
+  useEffect(() => {
+    const sim = simRef.current;
+    const activeGrid = sim.roomSettings?.gridSize || GRID_SIZE;
+
+    // Pick a non-overlapping spawn tile once if another player is already standing on (4, 5)
+    if (!hasPickedInitialSpawnRef.current && remotePlayers.length > 0) {
+      hasPickedInitialSpawnRef.current = true;
+      const someoneAtDefault = remotePlayers.some(
+        (p) => Math.round(p.x) === 4 && Math.round(p.y) === 5
+      );
+      if (someoneAtDefault && sim.pathQueue.length === 0) {
+        const spawn = pickWalkableSpawnTile(
+          sim.objects,
+          remotePlayers,
+          activeGrid
+        );
+        sim.avatarPos = { x: spawn.x, y: spawn.y };
+        broadcastLocalMoveRef.current({
+          x: spawn.x,
+          y: spawn.y,
+          targetX: spawn.x,
+          targetY: spawn.y,
+          facing: sim.avatarFacing,
+          isSitting: false,
+        });
+      }
+    }
+
+    const nextIds = new Set(remotePlayers.map((p) => p.id));
+    Object.keys(sim.remoteSimMap).forEach((id) => {
+      if (!nextIds.has(id)) {
+        delete sim.remoteSimMap[id];
+      }
+    });
+
+    remotePlayers.forEach((rp) => {
+      const existing = sim.remoteSimMap[rp.id];
+      const visProfile: VisitorAvatarProfile | null = rp.isOwner
+        ? null
+        : {
+            ...rp.avatar,
+            name: rp.name,
+          };
+
+      if (!existing) {
+        const startX = Math.round(rp.x);
+        const startY = Math.round(rp.y);
+        const destX = Math.round(rp.targetX);
+        const destY = Math.round(rp.targetY);
+        const initialPath =
+          startX !== destX || startY !== destY
+            ? findPath(
+                { x: startX, y: startY },
+                { x: destX, y: destY },
+                sim.objects,
+                activeGrid
+              )
+            : [];
+
+        sim.remoteSimMap[rp.id] = {
+          id: rp.id,
+          name: rp.name,
+          pos: { x: rp.x, y: rp.y },
+          targetX: destX,
+          targetY: destY,
+          pathQueue: initialPath,
+          facing: rp.facing,
+          isSitting: rp.isSitting && initialPath.length === 0,
+          action: rp.action,
+          visitorAvatar: visProfile,
+        };
+      } else {
+        existing.name = rp.name;
+        existing.action = rp.action;
+        existing.visitorAvatar = visProfile;
+
+        const destX = Math.round(rp.targetX);
+        const destY = Math.round(rp.targetY);
+        const curX = Math.round(existing.pos.x);
+        const curY = Math.round(existing.pos.y);
+
+        if (destX !== existing.targetX || destY !== existing.targetY) {
+          existing.targetX = destX;
+          existing.targetY = destY;
+          existing.isSitting = false;
+          const newPath = findPath(
+            { x: curX, y: curY },
+            { x: destX, y: destY },
+            sim.objects,
+            activeGrid
+          );
+          if (newPath.length > 0) {
+            existing.pathQueue = newPath;
+          } else if (Math.hypot(destX - curX, destY - curY) > 0.1) {
+            existing.pathQueue = [{ x: destX, y: destY }];
+          }
+        } else if (existing.pathQueue.length === 0) {
+          existing.facing = rp.facing;
+          existing.isSitting = rp.isSitting;
+        }
+      }
+    });
+  }, [remotePlayers]);
+
   // Mirror playing state onto document.body.dataset.state
   useEffect(() => {
     document.body.dataset.state = 'playing';
@@ -467,6 +597,14 @@ export default function HabboRoomView() {
           facing: sitTarget.rotation,
           walking: false,
         });
+        broadcastLocalMoveRef.current({
+          x: sitTarget.x,
+          y: sitTarget.y,
+          targetX: sitTarget.x,
+          targetY: sitTarget.y,
+          facing: sitTarget.rotation,
+          isSitting: true,
+        });
         pixelAudio.playSitOnSofa();
         return;
       }
@@ -488,6 +626,15 @@ export default function HabboRoomView() {
         } else {
           sim.avatarFacing = stepDy >= 0 ? 'sw' : 'ne';
         }
+        const finalStep = path[path.length - 1];
+        broadcastLocalMoveRef.current({
+          x: sim.avatarPos.x,
+          y: sim.avatarPos.y,
+          targetX: finalStep.x,
+          targetY: finalStep.y,
+          facing: sim.avatarFacing,
+          isSitting: false,
+        });
         setAvatarDebugState({
           x: startX,
           y: startY,
@@ -641,6 +788,14 @@ export default function HabboRoomView() {
               setSittingOnObjectId(sitObj.id);
               pixelAudio.playSitOnSofa();
             }
+            broadcastLocalMoveRef.current({
+              x: Math.round(sim.avatarPos.x),
+              y: Math.round(sim.avatarPos.y),
+              targetX: Math.round(sim.avatarPos.x),
+              targetY: Math.round(sim.avatarPos.y),
+              facing: sim.avatarFacing,
+              isSitting: sim.isAvatarSitting,
+            });
             setAvatarDebugState({
               x: Math.round(sim.avatarPos.x),
               y: Math.round(sim.avatarPos.y),
@@ -662,6 +817,60 @@ export default function HabboRoomView() {
           };
         }
       }
+
+      // Advance smooth 60-FPS walking interpolation for all remote players in the room
+      const remoteSpeed = 3.8;
+      const remoteAvatarsList: RenderedRemoteAvatar[] = Object.values(
+        sim.remoteSimMap
+      ).map((ra) => {
+        if (ra.pathQueue.length > 0) {
+          const nextStep = ra.pathQueue[0];
+          const rdx = nextStep.x - ra.pos.x;
+          const rdy = nextStep.y - ra.pos.y;
+          const rdist = Math.hypot(rdx, rdy);
+
+          if (Math.abs(rdx) > 0.02 || Math.abs(rdy) > 0.02) {
+            if (Math.abs(rdx) >= Math.abs(rdy)) {
+              ra.facing = rdx >= 0 ? 'se' : 'nw';
+            } else {
+              ra.facing = rdy >= 0 ? 'sw' : 'ne';
+            }
+          }
+
+          const stepDist = remoteSpeed * dt;
+          if (rdist <= stepDist) {
+            ra.pos = { x: nextStep.x, y: nextStep.y };
+            ra.pathQueue.shift();
+            if (ra.pathQueue.length === 0) {
+              const sitAtEnd = findSittableObjectAtTile(
+                Math.round(ra.pos.x),
+                Math.round(ra.pos.y),
+                sim.objects
+              );
+              if (sitAtEnd) {
+                ra.facing = sitAtEnd.rotation;
+                ra.isSitting = true;
+              }
+            }
+          } else {
+            ra.pos = {
+              x: ra.pos.x + (rdx / rdist) * stepDist,
+              y: ra.pos.y + (rdy / rdist) * stepDist,
+            };
+          }
+        }
+
+        return {
+          id: ra.id,
+          name: ra.name,
+          pos: ra.pos,
+          facing: ra.facing,
+          isWalking: ra.pathQueue.length > 0,
+          isSitting: ra.isSitting,
+          action: ra.action,
+          visitorAvatar: ra.visitorAvatar,
+        };
+      });
 
       const ctx = canvas.getContext('2d', { alpha: true });
       if (ctx) {
@@ -692,6 +901,7 @@ export default function HabboRoomView() {
           visitorAvatar: sim.visitorAvatar,
           roomSettings: sim.roomSettings,
           avatarAction: sim.avatarAction,
+          remoteAvatars: remoteAvatarsList,
         });
         ctx.restore();
       }
@@ -751,12 +961,21 @@ export default function HabboRoomView() {
       // Always update facing immediately so pressing Up/Left shows Higma's back right away
       sim.avatarFacing = desiredFacing;
 
+      const activeGrid = sim.roomSettings?.gridSize || GRID_SIZE;
       const sitTarget = findSittableObjectAtTile(nx, ny, sim.objects);
-      if (isTileWalkable(nx, ny, sim.objects) || sitTarget) {
+      if (isTileWalkable(nx, ny, sim.objects, activeGrid) || sitTarget) {
         sim.isAvatarSitting = false;
         sim.pendingSitObject = sitTarget;
         setSittingOnObjectId(null);
         sim.pathQueue = [{ x: nx, y: ny }];
+        broadcastLocalMoveRef.current({
+          x: curX,
+          y: curY,
+          targetX: nx,
+          targetY: ny,
+          facing: desiredFacing,
+          isSitting: false,
+        });
         setAvatarDebugState({
           x: nx,
           y: ny,
@@ -2125,6 +2344,53 @@ export default function HabboRoomView() {
                   <span className="font-bold">Furni Count:</span>{' '}
                   {objects.length} items
                 </div>
+                <div>
+                  <span className="font-bold text-[#15803D]">
+                    Players Online:
+                  </span>{' '}
+                  <span className="font-bold">{1 + remotePlayers.length}</span>
+                </div>
+              </div>
+
+              {/* Live List of Players Currently Inside the Room */}
+              <div className="rounded border border-[#8E8E8A] bg-white p-1.5 space-y-1 max-h-28 overflow-y-auto">
+                <div className="text-[9px] font-bold uppercase text-[#3B6E8C]">
+                  Who&apos;s in this Room ({1 + remotePlayers.length})
+                </div>
+                <div className="flex items-center justify-between text-[10px] font-bold text-black">
+                  <span className="flex items-center gap-1">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500 border border-black" />
+                    <span>{activeSpeakerName} (You)</span>
+                  </span>
+                </div>
+                {remotePlayers.map((rp) => (
+                  <div
+                    key={rp.id}
+                    className="flex items-center justify-between text-[10px] text-[#222222]"
+                  >
+                    <span className="flex items-center gap-1 truncate">
+                      <span className="h-2 w-2 rounded-full bg-emerald-500 border border-black shrink-0" />
+                      <span className="font-bold truncate">{rp.name}</span>
+                      <span className="text-[9px] text-[#666666]">
+                        ({Math.round(rp.x)},{Math.round(rp.y)})
+                      </span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        triggerAvatarAction('wave');
+                        pushChatBubble(
+                          activeSpeakerName,
+                          `o/ Hey ${rp.name}!`,
+                          'avatar'
+                        );
+                      }}
+                      className="rounded border border-black bg-[#FACC15] px-1 py-0.5 text-[8px] font-bold text-black hover:bg-amber-300 shrink-0"
+                    >
+                      Wave o/
+                    </button>
+                  </div>
+                ))}
               </div>
               <div className="flex items-center justify-between pt-1">
                 <Link
@@ -2199,14 +2465,15 @@ export default function HabboRoomView() {
             type="button"
             data-testid="habbo-room-info-toggle"
             onClick={() => setIsRoomInfoOpen((prev) => !prev)}
-            title="Room Info & Navigator"
-            className={`flex h-[32px] items-center gap-1 rounded-[3px] border-2 border-black px-2 text-[10px] font-bold transition-colors ${
+            title="Room Info & Online Players in Room"
+            className={`flex h-[32px] items-center gap-1.5 rounded-[3px] border-2 border-black px-2 text-[10px] font-bold transition-colors ${
               isRoomInfoOpen
                 ? 'bg-[#3B6E8C] text-white shadow-[inset_0_1px_0_#6BA7C9]'
                 : 'bg-[#4A4745] text-[#E2E2DE] hover:bg-[#5C5856] shadow-[inset_0_1px_0_#7A7674]'
             }`}
           >
-            <span>Room</span>
+            <span className="h-2 w-2 rounded-full bg-emerald-400 border border-black" />
+            <span>Room ({1 + remotePlayers.length})</span>
           </button>
 
           <button
