@@ -43,6 +43,7 @@ import {
   isWallPosterType,
   DEFAULT_POSTER_IMAGES,
   sanitizeRoomSettings,
+  normalizeComputerUrl,
   pruneStalePlayers,
   pickWalkableSpawnTile,
   OBJECT_CATALOG,
@@ -697,5 +698,41 @@ test('multiplayer pruneStalePlayers and pickWalkableSpawnTile manage concurrent 
   // Since p1 is occupying (4, 5), pickWalkableSpawnTile chooses a distinct walkable tile
   const nextSpawn = pickWalkableSpawnTile(DEFAULT_ROOM_OBJECTS, pruned, 10);
   assert.notDeepEqual(nextSpawn, { x: 4, y: 5 });
+});
+
+test('normalizeComputerUrl and lockable_door support programmable CRT PCs and lockable rooms', () => {
+  const wiki = normalizeComputerUrl('en.wikipedia.org/wiki/Habbo');
+  assert.equal(wiki.url, 'https://en.wikipedia.org/wiki/Habbo');
+  assert.equal(wiki.canEmbedDirectly, true);
+
+  const yt = normalizeComputerUrl('https://youtu.be/dQw4w9WgXcQ');
+  assert.ok(yt.embedUrl.includes('youtube.com/embed/dQw4w9WgXcQ'));
+  assert.equal(yt.canEmbedDirectly, true);
+
+  const gh = normalizeComputerUrl('https://github.com/open-hotel');
+  assert.equal(gh.canEmbedDirectly, false);
+  assert.equal(gh.hostname, 'github.com');
+
+  // Lockable door blocks walkability when isDoorLocked is true
+  const unlockedPlacement = applyTilePlacement(
+    [],
+    {
+      id: 'door-1',
+      type: 'lockable_door',
+      label: 'Bedroom Door',
+      x: 4,
+      y: 4,
+      isDoorLocked: false,
+    },
+    'replace'
+  );
+  assert.equal(isTileWalkable(4, 4, unlockedPlacement.objects), true);
+
+  const lockedObjs = updateRoomObjectTransform(
+    unlockedPlacement.objects,
+    'door-1',
+    { isDoorLocked: true }
+  );
+  assert.equal(isTileWalkable(4, 4, lockedObjs), false);
 });
 

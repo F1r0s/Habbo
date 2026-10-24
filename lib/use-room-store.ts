@@ -54,7 +54,7 @@ import {
 const STORAGE_KEY_OBJECTS = 'habbofolio_room_objects_v7';
 const STORAGE_KEY_PROJECTS = 'habbofolio_project_links_v2';
 const STORAGE_KEY_PETS = 'habbofolio_room_pets_v1';
-const STORAGE_KEY_INVENTORY = 'habbofolio_inventory_items_v4';
+const STORAGE_KEY_INVENTORY = 'habbofolio_inventory_items_v5';
 const STORAGE_KEY_INVENTORY_STACK = 'habbofolio_inventory_stack_v1';
 const STORAGE_KEY_ROOM_SETTINGS = 'habbofolio_room_settings_v1';
 const STORAGE_KEY_CUSTOM_BGM = 'habbofolio_custom_bgm_v1';
@@ -488,7 +488,11 @@ export function useRoomStore() {
       if (savedInv !== null) {
         const parsedInv = JSON.parse(savedInv);
         if (Array.isArray(parsedInv)) {
-          setInventory(parsedInv);
+          const existingTypes = new Set(parsedInv.map((i: InventoryItem) => i.type));
+          const missingDefaults = DEFAULT_INVENTORY_ITEMS.filter(
+            (d) => !existingTypes.has(d.type)
+          );
+          setInventory([...parsedInv, ...missingDefaults]);
         }
       }
       if (savedStack !== null) {
@@ -1014,6 +1018,8 @@ export function useRoomStore() {
         projectId?: string;
         videoUrl?: string;
         imageUrl?: string;
+        pcUrl?: string;
+        isDoorLocked?: boolean;
         customNote?: string;
         consumeInventoryItemId?: string;
       },
@@ -1035,6 +1041,8 @@ export function useRoomStore() {
           projectId: input.projectId,
           videoUrl: input.videoUrl,
           imageUrl: input.imageUrl,
+          pcUrl: input.pcUrl,
+          isDoorLocked: input.isDoorLocked,
           customNote: input.customNote,
         },
         mode
@@ -1462,6 +1470,8 @@ export function useRoomStore() {
         rotationAngle?: number;
         colorVariant?: string;
         imageUrl?: string;
+        pcUrl?: string;
+        isDoorLocked?: boolean;
         label?: string;
       }
     ) => {

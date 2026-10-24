@@ -76,6 +76,7 @@ import IsometricYoutubeTvOverlay, {
   dispatchTvControlEvent,
 } from './IsometricYoutubeTvOverlay';
 import IsometricWallPostersOverlay from './IsometricWallPostersOverlay';
+import ComputerScreenModal from './ComputerScreenModal';
 
 const TIME_OVERRIDE_PRESETS: Array<{ label: string; hour: number | null }> = [
   { label: 'AUTO', hour: null },
@@ -88,6 +89,19 @@ const TIME_OVERRIDE_PRESETS: Array<{ label: string; hour: number | null }> = [
 const NOTIFICATION_AUTO_DISMISS_MS = 5200;
 
 const QUICK_PLACEABLE_TYPES: RoomObjectType[] = [
+  'retro_pc_desk',
+  'office_chair',
+  'red_sofa',
+  'beanbag_chair',
+  'bed_blue',
+  'bed_green',
+  'bookshelf',
+  'wardrobe',
+  'crt_tv_console',
+  'pizza_box',
+  'floor_lamp',
+  'wall_divider',
+  'lockable_door',
   'dispenser_coffee',
   'dispenser_cola',
   'dispenser_juice',
@@ -176,6 +190,32 @@ const INTERACTION_FLAVOR_TEXT: Record<RoomObjectType, string> = {
     'Recessed isometric steps leading down into a sunken lounge pit.',
   upper_floor_tile:
     'Raised mezzanine building floor deck with support pillars for multi-level rooms.',
+  retro_pc_desk:
+    'Interactive Retro CRT Computer Desk! Click to open the programmed website or app on the CRT monitor.',
+  office_chair:
+    'Ergonomic wheeled swivel desk chair. Click to sit down at the computer desk!',
+  red_sofa:
+    'Classic crimson-red plush 3-seater lounge sofa. Click to walk over and sit down!',
+  beanbag_chair:
+    'Cozy gamer beanbag chair on the floor. Click to sink in and relax!',
+  bed_blue:
+    'Cozy wooden single bed with a striped sky-blue blanket and pillow. Click to rest!',
+  bed_green:
+    'Cozy wooden single bed with a striped emerald-green blanket and pillow. Click to rest!',
+  bookshelf:
+    'Tall wooden bookcase packed with colorful pixel books and binders.',
+  wardrobe:
+    'Open wooden bedroom wardrobe closet with hanging jackets, drawers, and stickers.',
+  crt_tv_console:
+    'Retro CRT television on a wooden media stand with classic gaming consoles & wired controllers.',
+  pizza_box:
+    'Open delivery box with a hot pepperoni & cheese pixel pizza!',
+  floor_lamp:
+    'Tall bedroom standing lamp casting a cozy warm golden light.',
+  wall_divider:
+    'Full-height interior room wall partition dividing the home into separate rooms.',
+  lockable_door:
+    'Interior room door that can be locked or unlocked by the room owner in Floor Studio.',
 };
 
 function MiniFurniIcon({
@@ -373,11 +413,12 @@ export default function HabboRoomView() {
     walking: boolean;
   }>({ x: 4, y: 5, facing: 'sw', walking: false });
 
-  // Optional full project modal or secret console modal
+  // Optional full project modal, computer screen modal, or secret console modal
   const [activeProject, setActiveProject] = useState<{
     project: ProjectLink;
     screenObj?: RoomObject;
   } | null>(null);
+  const [activePcObject, setActivePcObject] = useState<RoomObject | null>(null);
   const [isConsoleModalOpen, setIsConsoleModalOpen] = useState(false);
 
   // Resolve active inspected object (live from store if present, or fallback to snapshot)
@@ -1358,10 +1399,61 @@ export default function HabboRoomView() {
     setInspectedObjectState(obj);
     setInteractionNoticeKey((k) => k + 1);
 
-    // 1. Sofa or Stool -> Walk to it and sit on it!
-    if (obj.type === 'white_sofa' || obj.type === 'wood_stool') {
+    // 1. Sofa, Office Chair, Beanbag, Bed or Stool -> Walk to it and sit/rest on it!
+    if (
+      obj.type === 'white_sofa' ||
+      obj.type === 'red_sofa' ||
+      obj.type === 'office_chair' ||
+      obj.type === 'beanbag_chair' ||
+      obj.type === 'bed_blue' ||
+      obj.type === 'bed_green' ||
+      obj.type === 'wood_stool'
+    ) {
       walkAvatarTo(obj.x, obj.y, obj);
-      pushChatBubble(activeSpeakerName, '*sits down comfortably*', 'avatar');
+      pushChatBubble(
+        activeSpeakerName,
+        obj.type === 'bed_blue' || obj.type === 'bed_green'
+          ? '*relaxes on the cozy bed*'
+          : '*sits down comfortably*',
+        'avatar'
+      );
+      return;
+    }
+
+    // 1-PC. Interactive Retro PC Desk -> Walk to desk (or sit in adjacent chair) and open the CRT Computer Screen!
+    if (obj.type === 'retro_pc_desk') {
+      const adjacentChair = simRef.current.objects.find(
+        (o) =>
+          (o.type === 'office_chair' || o.type === 'wood_stool') &&
+          Math.abs(o.x - obj.x) + Math.abs(o.y - obj.y) === 1
+      );
+      if (adjacentChair) {
+        walkAvatarTo(adjacentChair.x, adjacentChair.y, adjacentChair);
+      } else {
+        walkAvatarTo(obj.x, obj.y, null);
+      }
+      setActivePcObject(obj);
+      pixelAudio.playConsoleClick();
+      pushChatBubble(
+        activeSpeakerName,
+        `*logs onto ${obj.label} 💻*`,
+        'avatar'
+      );
+      return;
+    }
+
+    // 1-Door. Lockable Interior Door -> Check if locked or open
+    if (obj.type === 'lockable_door') {
+      if (obj.isDoorLocked) {
+        pixelAudio.playConsoleClick();
+        pushChatBubble(
+          activeSpeakerName,
+          '*tries the door — it is LOCKED 🔒!*',
+          'avatar'
+        );
+      } else {
+        walkAvatarTo(obj.x, obj.y, null);
+      }
       return;
     }
 
@@ -1439,6 +1531,11 @@ export default function HabboRoomView() {
 
   const isInspectingSofa =
     inspectedObject?.type === 'white_sofa' ||
+    inspectedObject?.type === 'red_sofa' ||
+    inspectedObject?.type === 'office_chair' ||
+    inspectedObject?.type === 'beanbag_chair' ||
+    inspectedObject?.type === 'bed_blue' ||
+    inspectedObject?.type === 'bed_green' ||
     inspectedObject?.type === 'wood_stool';
 
   // Compute screen coordinates for the in-room floating Habbo pop-up above the clicked item
@@ -2263,6 +2360,18 @@ export default function HabboRoomView() {
                         </span>
                       </button>
                       </div>
+                  ) : inspectedObject.type === 'retro_pc_desk' ? (
+                    <button
+                      type="button"
+                      data-testid="tooltip-open-pc-screen"
+                      onClick={() => {
+                        setActivePcObject(inspectedObject);
+                        pixelAudio.playConsoleClick();
+                      }}
+                      className="inline-flex items-center gap-1 border border-black bg-[#00748C] px-2.5 py-0.5 text-[10px] font-bold text-white hover:bg-[#0089A6]"
+                    >
+                      <span>Open PC Screen 💻</span>
+                    </button>
                   ) : isDrinkDispenserType(inspectedObject.type) ? (
                     <button
                       type="button"
@@ -3216,6 +3325,12 @@ export default function HabboRoomView() {
           </button>
         </div>
       </footer>
+
+      {/* Interactive CRT Computer Screen Modal (Opens when clicking any Retro PC Desk!) */}
+      <ComputerScreenModal
+        pcObject={activePcObject}
+        onClose={() => setActivePcObject(null)}
+      />
 
       {/* Optional Project Details Modal */}
       <ProjectModal

@@ -55,8 +55,10 @@ import {
   MIN_OBJECT_SCALE,
   MAX_OBJECT_SCALE,
   FloorPatternType,
+  DEFAULT_PC_URL,
   DEFAULT_POSTER_IMAGES,
   isWallPosterType,
+  normalizeComputerUrl,
   resolveStaircaseTargetFloor,
   generateFloorDeckForStaircase,
   hitTestRoomObjectAtScreen,
@@ -74,6 +76,7 @@ import IsometricWallPostersOverlay from './IsometricWallPostersOverlay';
 
 type BcCategoryFilter =
   | 'all'
+  | 'bedroom_walls'
   | 'wall_posters'
   | 'blocks_bottles'
   | 'seating'
@@ -93,6 +96,26 @@ const BC_CATEGORIES: Array<{
     id: 'all',
     label: 'Essentials',
     iconColor: '#EF4444',
+  },
+  {
+    id: 'bedroom_walls',
+    label: 'Bedroom, PC & Doors',
+    iconColor: '#E11D48',
+    types: [
+      'retro_pc_desk',
+      'office_chair',
+      'red_sofa',
+      'beanbag_chair',
+      'bed_blue',
+      'bed_green',
+      'bookshelf',
+      'wardrobe',
+      'crt_tv_console',
+      'pizza_box',
+      'floor_lamp',
+      'wall_divider',
+      'lockable_door',
+    ],
   },
   {
     id: 'wall_posters',
@@ -119,9 +142,17 @@ const BC_CATEGORIES: Array<{
   },
   {
     id: 'seating',
-    label: 'Chairs & Sofas',
+    label: 'Chairs, Beds & Sofas',
     iconColor: '#F472B6',
-    types: ['white_sofa', 'wood_stool'],
+    types: [
+      'white_sofa',
+      'red_sofa',
+      'office_chair',
+      'beanbag_chair',
+      'bed_blue',
+      'bed_green',
+      'wood_stool',
+    ],
   },
   {
     id: 'tables',
@@ -157,9 +188,16 @@ const BC_CATEGORIES: Array<{
   },
   {
     id: 'screens',
-    label: 'Screens & 3D TV',
+    label: 'PCs, Screens & 3D TV',
     iconColor: '#38BDF8',
-    types: ['youtube_tv', 'neon_bulletin', 'floating_screen', 'admin_console'],
+    types: [
+      'retro_pc_desk',
+      'crt_tv_console',
+      'youtube_tv',
+      'neon_bulletin',
+      'floating_screen',
+      'admin_console',
+    ],
   },
 ];
 
@@ -193,6 +231,19 @@ const HABBO_ENGLISH_NAMES: Record<RoomObjectType, string> = {
   stairs_up: 'Isometric Staircase (Up)',
   stairs_down: 'Isometric Staircase (Down)',
   upper_floor_tile: 'Elevated Upper Floor Deck',
+  retro_pc_desk: 'Retro CRT Computer Desk',
+  office_chair: 'Swivel PC Office Chair',
+  red_sofa: 'Red Plush 3-Seater Sofa',
+  beanbag_chair: 'Cozy Pixel Beanbag',
+  bed_blue: 'Cozy Striped Blue Bed',
+  bed_green: 'Cozy Striped Green Bed',
+  bookshelf: 'Tall Wooden Bookcase',
+  wardrobe: 'Open Wooden Wardrobe',
+  crt_tv_console: 'Retro CRT TV & Consoles',
+  pizza_box: 'Open Hot Pizza Box',
+  floor_lamp: 'Warm Standing Floor Lamp',
+  wall_divider: 'Interior Wall Divider',
+  lockable_door: 'Lockable Room Door',
 };
 
 // Classic 52-color Habbo Builders' Club Palette matching reference image_b38e0cb6.png
@@ -379,6 +430,8 @@ export default function AdminDashboard() {
   );
   const [tvUrlError, setTvUrlError] = useState<string | null>(null);
   const [posterImageUrlInput, setPosterImageUrlInput] = useState<string>('');
+  const [pcUrlInput, setPcUrlInput] = useState<string>(DEFAULT_PC_URL);
+  const [doorLockedDefault, setDoorLockedDefault] = useState<boolean>(false);
   const [selectedPlacedObjectId, setSelectedPlacedObjectId] = useState<
     string | null
   >(null);
@@ -677,6 +730,15 @@ export default function AdminDashboard() {
                 payload.type as keyof typeof DEFAULT_POSTER_IMAGES
               ]
             : undefined),
+        pcUrl:
+          payload.pcUrl ||
+          (payload.type === 'retro_pc_desk' ? pcUrlInput : undefined),
+        isDoorLocked:
+          typeof payload.isDoorLocked === 'boolean'
+            ? payload.isDoorLocked
+            : payload.type === 'lockable_door'
+              ? doorLockedDefault
+              : undefined,
         consumeInventoryItemId:
           payload.inventoryItemId || selectedInventoryItemId || undefined,
       },
@@ -2641,6 +2703,121 @@ export default function AdminDashboard() {
                 </div>
               )}
 
+              {/* 4c. Retro Desktop PC Link Programmer (Works with ANY Website / Link!) */}
+              {(selectedType === 'retro_pc_desk' ||
+                activeFloorObj?.type === 'retro_pc_desk') && (
+                <div
+                  data-testid="admin-pc-url-panel"
+                  className="mt-1.5 rounded-[3px] border border-[#8E8E8A] bg-[#D6D6D2] p-2 space-y-1.5"
+                >
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className="font-bold text-[#1E1E1E]">
+                      💻 Program Desktop PC Link (Auto-Saved):
+                    </span>
+                    <span className="rounded bg-[#00748C] px-1.5 py-0.5 text-[8px] font-bold text-white">
+                      Any URL
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="text"
+                      data-testid="admin-pc-url-input"
+                      value={
+                        activeFloorObj?.type === 'retro_pc_desk'
+                          ? activeFloorObj.pcUrl || pcUrlInput
+                          : pcUrlInput
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPcUrlInput(val);
+                        if (activeFloorObj?.type === 'retro_pc_desk') {
+                          updateObjectTransform(activeFloorObj.id, {
+                            pcUrl: val,
+                          });
+                        }
+                      }}
+                      placeholder="Paste any URL (https://...)"
+                      className="flex-1 min-w-0 rounded-[2px] border border-[#7A7A76] bg-white px-2 py-1 text-[10px] text-black focus:border-black focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const norm = normalizeComputerUrl(pcUrlInput);
+                        setPcUrlInput(norm.url);
+                        const targetPc =
+                          activeFloorObj?.type === 'retro_pc_desk'
+                            ? activeFloorObj
+                            : objects.find((o) => o.type === 'retro_pc_desk');
+                        if (targetPc) {
+                          updateObjectTransform(targetPc.id, {
+                            pcUrl: norm.url,
+                          });
+                          setStatusToast(
+                            `Programmed PC (${targetPc.label}) to open ${norm.hostname} (Auto-saved)!`
+                          );
+                        } else {
+                          setStatusToast(
+                            `PC Link set to ${norm.hostname}! Click a floor tile to place the PC.`
+                          );
+                        }
+                      }}
+                      className="shrink-0 rounded-[2px] border border-black bg-[#00748C] px-2.5 py-1 text-[10px] font-bold text-white hover:bg-[#0089A6]"
+                    >
+                      Save Link
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* 4d. Lockable Room Door Security Control (Lock / Unlock Private Rooms) */}
+              {(selectedType === 'lockable_door' ||
+                activeFloorObj?.type === 'lockable_door') && (
+                <div
+                  data-testid="admin-door-lock-panel"
+                  className="mt-1.5 rounded-[3px] border border-[#8E8E8A] bg-[#D6D6D2] p-2 flex items-center justify-between gap-2 text-[10px]"
+                >
+                  <span className="font-bold text-[#1E1E1E]">
+                    🚪 Room Door Access:
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="admin-toggle-door-lock-btn"
+                    onClick={() => {
+                      if (activeFloorObj?.type === 'lockable_door') {
+                        const nextLock = !activeFloorObj.isDoorLocked;
+                        updateObjectTransform(activeFloorObj.id, {
+                          isDoorLocked: nextLock,
+                        });
+                        setStatusToast(
+                          nextLock
+                            ? 'Door LOCKED 🔒 — Visitors cannot enter!'
+                            : 'Door UNLOCKED 🔓 — Visitors can walk through!'
+                        );
+                      } else {
+                        setDoorLockedDefault((prev) => !prev);
+                      }
+                    }}
+                    className={`rounded-[3px] border border-black px-3 py-1 font-bold text-white ${
+                      (
+                        activeFloorObj?.type === 'lockable_door'
+                          ? activeFloorObj.isDoorLocked
+                          : doorLockedDefault
+                      )
+                        ? 'bg-[#C93B2B] hover:bg-[#E04836]'
+                        : 'bg-[#15803D] hover:bg-[#16A34A]'
+                    }`}
+                  >
+                    {(
+                      activeFloorObj?.type === 'lockable_door'
+                        ? activeFloorObj.isDoorLocked
+                        : doorLockedDefault
+                    )
+                      ? '🔒 Door is LOCKED (Click to Unlock)'
+                      : '🔓 Door is OPEN (Click to Lock)'}
+                  </button>
+                </div>
+              )}
+
               {/* 5. 3D YouTube TV Programmer Box inside Floor Studio */}
               <form
                 onSubmit={handleProgramTvUrl}
@@ -3159,6 +3336,50 @@ export default function AdminDashboard() {
                     </button>
                   </div>
                 </div>
+
+                {/* 3b. Quick Door Lock Toggle or PC URL inside Right-Click Menu */}
+                {activeFloorObj.type === 'lockable_door' && (
+                  <div className="border-t border-[#BDBDB8] pt-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const nextL = !activeFloorObj.isDoorLocked;
+                        updateObjectTransform(activeFloorObj.id, {
+                          isDoorLocked: nextL,
+                        });
+                        setStatusToast(
+                          nextL ? 'Door LOCKED 🔒!' : 'Door UNLOCKED 🔓!'
+                        );
+                      }}
+                      className={`w-full rounded border border-black py-1 font-bold text-white ${
+                        activeFloorObj.isDoorLocked
+                          ? 'bg-[#C93B2B]'
+                          : 'bg-[#15803D]'
+                      }`}
+                    >
+                      {activeFloorObj.isDoorLocked
+                        ? '🔒 Locked (Click to Unlock)'
+                        : '🔓 Open (Click to Lock)'}
+                    </button>
+                  </div>
+                )}
+
+                {activeFloorObj.type === 'retro_pc_desk' && (
+                  <div className="border-t border-[#BDBDB8] pt-1.5 space-y-1">
+                    <span className="font-bold">💻 PC Website URL:</span>
+                    <input
+                      type="text"
+                      value={activeFloorObj.pcUrl || ''}
+                      onChange={(e) =>
+                        updateObjectTransform(activeFloorObj.id, {
+                          pcUrl: e.target.value,
+                        })
+                      }
+                      placeholder="https://..."
+                      className="w-full rounded border border-black bg-white px-1.5 py-0.5 text-[9px] text-black"
+                    />
+                  </div>
+                )}
 
                 {/* 4. Duplicate & Delete Actions */}
                 <div className="grid grid-cols-2 gap-1.5 border-t border-[#BDBDB8] pt-1.5">

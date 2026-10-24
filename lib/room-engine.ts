@@ -27,7 +27,20 @@ export type RoomObjectType =
     | 'dispenser_juice'
     | 'stairs_up'
     | 'stairs_down'
-    | 'upper_floor_tile';
+    | 'upper_floor_tile'
+    | 'retro_pc_desk'
+    | 'office_chair'
+    | 'red_sofa'
+    | 'beanbag_chair'
+    | 'bed_blue'
+    | 'bed_green'
+    | 'bookshelf'
+    | 'wardrobe'
+    | 'crt_tv_console'
+    | 'pizza_box'
+    | 'floor_lamp'
+    | 'wall_divider'
+    | 'lockable_door';
 
   export type HeldDrinkType = 'none' | 'coffee' | 'cola' | 'juice';
 
@@ -146,6 +159,8 @@ export interface RoomObject {
   projectId?: string; // Linked ProjectLink ID
   videoUrl?: string; // Programmed YouTube URL or video ID for youtube_tv
   imageUrl?: string; // Custom or preset poster artwork URL / Data URI
+  pcUrl?: string; // Programmed website/app/embed URL for retro_pc_desk
+  isDoorLocked?: boolean; // Lock state for lockable_door (true = locked/non-walkable)
   customNote?: string;
   createdAt: string;
 }
@@ -921,7 +936,208 @@ export const OBJECT_CATALOG: Record<
         'Raised mezzanine building floor tile with chrome railing trim for multi-level rooms.',
       defaultColor: '#cbd5e1',
     },
+    retro_pc_desk: {
+      type: 'retro_pc_desk',
+      name: 'Retro CRT Computer Desk',
+      category: 'project_display',
+      defaultWalkable: false,
+      stackHeight: 2,
+      description:
+        'Interactive wooden desk with a beige CRT PC monitor, keyboard & mouse! Click to open the programmed website on screen.',
+      defaultColor: '#cbd5e1',
+    },
+    office_chair: {
+      type: 'office_chair',
+      name: 'Swivel PC Office Chair',
+      category: 'furniture',
+      defaultWalkable: false,
+      defaultSittable: true,
+      stackHeight: 1,
+      description:
+        'Ergonomic wheeled swivel desk chair. Place in front of a PC desk and click to sit!',
+      defaultColor: '#475569',
+    },
+    red_sofa: {
+      type: 'red_sofa',
+      name: 'Classic Red Plush 3-Seater Sofa',
+      category: 'furniture',
+      defaultWalkable: false,
+      defaultSittable: true,
+      stackHeight: 1,
+      description:
+        'Warm crimson-red 3-cushion lounge sofa from the pixel apartment. Click to sit down!',
+      defaultColor: '#dc2626',
+    },
+    beanbag_chair: {
+      type: 'beanbag_chair',
+      name: 'Cozy Pixel Beanbag Chair',
+      category: 'furniture',
+      defaultWalkable: false,
+      defaultSittable: true,
+      stackHeight: 1,
+      description:
+        'Plush round gamer beanbag chair on the floor. Click to sink in and relax!',
+      defaultColor: '#9333ea',
+    },
+    bed_blue: {
+      type: 'bed_blue',
+      name: 'Cozy Striped Blue Bed',
+      category: 'furniture',
+      defaultWalkable: false,
+      defaultSittable: true,
+      stackHeight: 1,
+      description:
+        'Wooden headboard single bed with striped sky-blue blanket, pillow & under-bed storage boxes. Click to rest!',
+      defaultColor: '#2563eb',
+    },
+    bed_green: {
+      type: 'bed_green',
+      name: 'Cozy Striped Green Bed',
+      category: 'furniture',
+      defaultWalkable: false,
+      defaultSittable: true,
+      stackHeight: 1,
+      description:
+        'Wooden headboard single bed with striped emerald-green blanket, pillow & under-bed boxes. Click to rest!',
+      defaultColor: '#16a34a',
+    },
+    bookshelf: {
+      type: 'bookshelf',
+      name: 'Tall Wooden Bookcase',
+      category: 'furniture',
+      defaultWalkable: false,
+      stackHeight: 2,
+      description:
+        'Five-shelf oak bookcase packed with colorful pixel books and binders.',
+      defaultColor: '#b45309',
+    },
+    wardrobe: {
+      type: 'wardrobe',
+      name: 'Open Wooden Wardrobe Closet',
+      category: 'furniture',
+      defaultWalkable: false,
+      stackHeight: 2,
+      description:
+        'Tall wooden bedroom wardrobe with hanging jackets, bottom drawers, and pixel stickers.',
+      defaultColor: '#92400e',
+    },
+    crt_tv_console: {
+      type: 'crt_tv_console',
+      name: 'Retro CRT TV & Game Consoles',
+      category: 'project_display',
+      defaultWalkable: false,
+      stackHeight: 2,
+      description:
+        'Classic dark-grey CRT television on a wooden media stand with retro gaming consoles & wired controllers on the floor.',
+      defaultColor: '#334155',
+    },
+    pizza_box: {
+      type: 'pizza_box',
+      name: 'Open Hot Pixel Pizza Box',
+      category: 'bottles_blocks',
+      defaultWalkable: false,
+      stackHeight: 1,
+      description:
+        'Open cardboard delivery box with a hot pepperoni & cheese pixel pizza and coffee mugs.',
+      defaultColor: '#f97316',
+    },
+    floor_lamp: {
+      type: 'floor_lamp',
+      name: 'Warm Standing Floor Lamp',
+      category: 'furniture',
+      defaultWalkable: false,
+      stackHeight: 2,
+      description:
+        'Tall bedroom standing lamp with a warm cream shade casting cozy golden light.',
+      defaultColor: '#fde68a',
+    },
+    wall_divider: {
+      type: 'wall_divider',
+      name: 'Interior Room Wall Divider',
+      category: 'furniture',
+      defaultWalkable: false,
+      stackHeight: 2,
+      description:
+        'Full-height isometric interior wall block to partition your home into private rooms!',
+      defaultColor: '#b85a46',
+    },
+    lockable_door: {
+      type: 'lockable_door',
+      name: 'Lockable Interior Room Door',
+      category: 'furniture',
+      defaultWalkable: true,
+      stackHeight: 2,
+      description:
+        'Isometric room door that can be Locked or Unlocked in Floor Studio to control access to private rooms!',
+      defaultColor: '#92400e',
+    },
   };
+
+export const DEFAULT_PC_URL = 'https://en.wikipedia.org/wiki/Habbo';
+
+/**
+ * Normalizes any website, web app, video, or repo URL programmed into a `retro_pc_desk`
+ * so it renders cleanly inside the screen-optimized CRT Computer Monitor modal.
+ */
+export function normalizeComputerUrl(rawInput?: string | null): {
+  url: string;
+  embedUrl: string;
+  canEmbedDirectly: boolean;
+  hostname: string;
+} {
+  let raw = (rawInput || '').trim();
+  if (!raw) {
+    raw = DEFAULT_PC_URL;
+  }
+  if (!/^https?:\/\//i.test(raw)) {
+    raw = `https://${raw}`;
+  }
+
+  try {
+    const parsed = new URL(raw);
+    const host = parsed.hostname.replace(/^www\./i, '').toLowerCase();
+
+    // Automatically convert YouTube links to embeddable URLs
+    const ytId = extractYouTubeVideoId(raw);
+    if (ytId) {
+      return {
+        url: `https://www.youtube.com/watch?v=${ytId}`,
+        embedUrl: `https://www.youtube.com/embed/${ytId}?autoplay=1&rel=0`,
+        canEmbedDirectly: true,
+        hostname: 'youtube.com',
+      };
+    }
+
+    // Sites that strictly set X-Frame-Options: DENY (we show a rich interactive CRT Launch Card + preview)
+    const frameBlockedHosts = [
+      'github.com',
+      'x.com',
+      'twitter.com',
+      'instagram.com',
+      'facebook.com',
+      'linkedin.com',
+      'discord.com',
+      'reddit.com',
+    ];
+    const isBlocked = frameBlockedHosts.some(
+      (bh) => host === bh || host.endsWith(`.${bh}`)
+    );
+
+    return {
+      url: parsed.toString(),
+      embedUrl: parsed.toString(),
+      canEmbedDirectly: !isBlocked,
+      hostname: host || 'website',
+    };
+  } catch {
+    return {
+      url: DEFAULT_PC_URL,
+      embedUrl: DEFAULT_PC_URL,
+      canEmbedDirectly: true,
+      hostname: 'wikipedia.org',
+    };
+  }
+}
 
 export const DEFAULT_POSTER_IMAGES: Record<
   'poster_chelsea' | 'poster_raja_gb05' | 'poster_wydad_winners',
@@ -1994,7 +2210,14 @@ export function findSittableObjectAtTile(
     (o) =>
       o.x === x &&
       o.y === y &&
-      (o.sittable === true || o.type === 'white_sofa' || o.type === 'wood_stool')
+      (o.sittable === true ||
+        o.type === 'white_sofa' ||
+        o.type === 'red_sofa' ||
+        o.type === 'wood_stool' ||
+        o.type === 'office_chair' ||
+        o.type === 'beanbag_chair' ||
+        o.type === 'bed_blue' ||
+        o.type === 'bed_green')
   );
   return match || null;
 }
@@ -2328,6 +2551,8 @@ export interface DragFurniturePayload {
   projectId?: string;
   videoUrl?: string;
   imageUrl?: string;
+  pcUrl?: string;
+  isDoorLocked?: boolean;
 }
 
 /**
@@ -2538,23 +2763,36 @@ export function hitTestRoomObjectAtScreen(
 
     // Standard 3D sprite bounding box above tile (sx, sy)
     const spriteTopHeight =
-      obj.type === 'royal_crown_gold' ||
-      obj.type === 'royal_crown_purple' ||
-      obj.type === 'potted_plant' ||
-      obj.type === 'neon_bulletin' ||
-      obj.type === 'floating_screen' ||
-      obj.type === 'admin_console'
-        ? 44
-        : obj.type === 'dispenser_coffee' ||
-            obj.type === 'dispenser_cola' ||
-            obj.type === 'dispenser_juice'
-          ? 38
-          : obj.type === 'white_sofa' ||
-              obj.type === 'wood_stool' ||
-              obj.type === 'stairs_up' ||
-              obj.type === 'stairs_down'
-            ? 26
-            : 20;
+      obj.type === 'wall_divider' ||
+      obj.type === 'lockable_door' ||
+      obj.type === 'bookshelf' ||
+      obj.type === 'wardrobe' ||
+      obj.type === 'floor_lamp'
+        ? 56
+        : obj.type === 'royal_crown_gold' ||
+            obj.type === 'royal_crown_purple' ||
+            obj.type === 'potted_plant' ||
+            obj.type === 'neon_bulletin' ||
+            obj.type === 'floating_screen' ||
+            obj.type === 'admin_console' ||
+            obj.type === 'retro_pc_desk' ||
+            obj.type === 'crt_tv_console'
+          ? 44
+          : obj.type === 'dispenser_coffee' ||
+              obj.type === 'dispenser_cola' ||
+              obj.type === 'dispenser_juice' ||
+              obj.type === 'bed_blue' ||
+              obj.type === 'bed_green'
+            ? 36
+            : obj.type === 'white_sofa' ||
+                obj.type === 'red_sofa' ||
+                obj.type === 'office_chair' ||
+                obj.type === 'beanbag_chair' ||
+                obj.type === 'wood_stool' ||
+                obj.type === 'stairs_up' ||
+                obj.type === 'stairs_down'
+              ? 28
+              : 20;
 
     const halfSpanX = 24 * scale;
     const boxTop = sy + TILE_HEIGHT / 2 - spriteTopHeight * scale;
@@ -2844,6 +3082,8 @@ export function applyTilePlacement(
     projectId?: string;
     videoUrl?: string;
     imageUrl?: string;
+    pcUrl?: string;
+    isDoorLocked?: boolean;
     customNote?: string;
     createdAt?: string;
   },
@@ -2896,6 +3136,9 @@ export function applyTilePlacement(
   );
   const resolvedScale = clampObjectScale(newObjInput.scale);
 
+  const isLockedDoor =
+    newObjInput.type === 'lockable_door' && Boolean(newObjInput.isDoorLocked);
+
   const placed: RoomObject = {
     id: newObjInput.id,
     type: newObjInput.type,
@@ -2907,7 +3150,10 @@ export function applyTilePlacement(
     rotationAngle: resolvedAngle,
     scale: resolvedScale,
     colorVariant: newObjInput.colorVariant || spec.defaultColor,
-    walkable: spec.defaultWalkable,
+    walkable:
+      newObjInput.type === 'lockable_door'
+        ? !isLockedDoor
+        : spec.defaultWalkable,
     sittable: spec.defaultSittable,
     projectId: newObjInput.projectId,
     videoUrl: normalizedVideoUrl,
@@ -2918,6 +3164,12 @@ export function applyTilePlacement(
             newObjInput.type as keyof typeof DEFAULT_POSTER_IMAGES
           ]
         : undefined),
+    pcUrl:
+      newObjInput.type === 'retro_pc_desk'
+        ? normalizeComputerUrl(newObjInput.pcUrl).url
+        : newObjInput.pcUrl,
+    isDoorLocked:
+      newObjInput.type === 'lockable_door' ? isLockedDoor : undefined,
     customNote: newObjInput.customNote,
     createdAt: newObjInput.createdAt || new Date().toISOString(),
   };
@@ -3310,6 +3562,8 @@ export function updateRoomObjectTransform(
     rotationAngle?: number;
     colorVariant?: string;
     imageUrl?: string;
+    pcUrl?: string;
+    isDoorLocked?: boolean;
     label?: string;
   }
 ): RoomObject[] {
@@ -3333,6 +3587,13 @@ export function updateRoomObjectTransform(
         ? clampObjectScale(transform.scale)
         : clampObjectScale(obj.scale);
 
+    const nextDoorLocked =
+      typeof transform.isDoorLocked === 'boolean'
+        ? transform.isDoorLocked
+        : obj.isDoorLocked;
+    const nextWalkable =
+      obj.type === 'lockable_door' ? !nextDoorLocked : obj.walkable;
+
     return {
       ...obj,
       label: transform.label?.trim() ? transform.label.trim() : obj.label,
@@ -3341,6 +3602,12 @@ export function updateRoomObjectTransform(
       scale: nextScale,
       colorVariant: transform.colorVariant ?? obj.colorVariant,
       imageUrl: transform.imageUrl ?? obj.imageUrl,
+      pcUrl:
+        typeof transform.pcUrl === 'string'
+          ? normalizeComputerUrl(transform.pcUrl).url
+          : obj.pcUrl,
+      isDoorLocked: nextDoorLocked,
+      walkable: nextWalkable,
     };
   });
 }

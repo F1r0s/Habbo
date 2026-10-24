@@ -2112,6 +2112,577 @@ function drawRoomObject(
       );
       break;
     }
+
+    case 'retro_pc_desk': {
+      const isSwapped = effectiveRotation === 'sw' || effectiveRotation === 'ne';
+      const deskW = isSwapped ? 48 : 56;
+      const deskH = isSwapped ? 24 : 28;
+      // 4 wooden desk legs
+      drawIsoPrism(ctx, sx - 18, sy + 12, 5, 3, 14, '#78350F', '#451A03', '#451A03');
+      drawIsoPrism(ctx, sx + 18, sy + 12, 5, 3, 14, '#78350F', '#451A03', '#451A03');
+      drawIsoPrism(ctx, sx, sy + 4, 5, 3, 14, '#78350F', '#451A03', '#451A03');
+      drawIsoPrism(ctx, sx, sy + 20, 5, 3, 14, '#78350F', '#451A03', '#451A03');
+      // Wooden desk surface
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy - 2,
+        deskW,
+        deskH,
+        5,
+        '#D4A373',
+        '#A97B50',
+        '#8A5A36',
+        '#000000'
+      );
+      // Beige 90s Desktop PC Case under/on desk
+      drawIsoPrism(
+        ctx,
+        sx - 6,
+        sy - 7,
+        24,
+        12,
+        6,
+        '#E5E5DC',
+        '#C8C8B8',
+        '#A8A898',
+        '#000000'
+      );
+      // Beige CRT Monitor on top
+      drawIsoPrism(
+        ctx,
+        sx - 6,
+        sy - 13,
+        22,
+        11,
+        16,
+        '#F0EFE6',
+        '#D6D5C9',
+        '#B5B4A6',
+        '#000000'
+      );
+      // Glowing CRT Screen face
+      const screenGlow = obj.colorVariant && obj.colorVariant !== '#cbd5e1' ? obj.colorVariant : '#22D3EE';
+      ctx.fillStyle = '#0F172A';
+      ctx.fillRect(Math.round(sx - 13), Math.round(sy - 25), 12, 9);
+      ctx.fillStyle = screenGlow;
+      ctx.fillRect(Math.round(sx - 12), Math.round(sy - 24), 10, 7);
+      // Pixel scanlines on CRT
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(Math.round(sx - 11), Math.round(sy - 22), 6, 1);
+      ctx.fillRect(Math.round(sx - 11), Math.round(sy - 20), 8, 1);
+      // Keyboard & Mouse on desk front
+      drawIsoDiamond(ctx, sx + 6, sy - 6, 16, 8, '#E5E5DC', '#000000', 1);
+      ctx.fillStyle = '#22C55E';
+      ctx.fillRect(Math.round(sx + 13), Math.round(sy - 3), 3, 2);
+      break;
+    }
+
+    case 'office_chair': {
+      const seatCol = obj.colorVariant || '#475569';
+      const seatLeft = shadeHexColor(seatCol, 0.8);
+      const seatRight = shadeHexColor(seatCol, 0.65);
+      // Wheeled 5-star base & gas cylinder
+      drawIsoDiamond(ctx, sx, sy + 11, 24, 12, '#1E293B', '#000000', 1);
+      ctx.fillStyle = '#0F172A';
+      ctx.fillRect(Math.round(sx - 2), Math.round(sy + 4), 4, 12);
+      // Padded swivel seat cushion
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 5,
+        26,
+        13,
+        5,
+        seatCol,
+        seatLeft,
+        seatRight,
+        '#000000'
+      );
+      // Ergonomic backrest oriented by rotation
+      const backDx =
+        effectiveRotation === 'se'
+          ? -6
+          : effectiveRotation === 'sw'
+            ? 6
+            : effectiveRotation === 'nw'
+              ? 6
+              : -6;
+      drawIsoPrism(
+        ctx,
+        sx + backDx,
+        sy - 1,
+        14,
+        10,
+        14,
+        seatCol,
+        seatLeft,
+        seatRight,
+        '#000000'
+      );
+      break;
+    }
+
+    case 'red_sofa': {
+      const baseRed = obj.colorVariant || '#DC2626';
+      const darkRed = shadeHexColor(baseRed, 0.78);
+      const deepRed = shadeHexColor(baseRed, 0.6);
+      const isSwapped = effectiveRotation === 'sw' || effectiveRotation === 'ne';
+      const sofaW = isSwapped ? 48 : 58;
+      const sofaH = isSwapped ? 26 : 30;
+      // Plush 3-seater red sofa base & cushions
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 6,
+        sofaW,
+        sofaH,
+        11,
+        baseRed,
+        darkRed,
+        deepRed,
+        '#000000'
+      );
+      // High plush backrest
+      const backShiftX =
+        effectiveRotation === 'sw'
+          ? 8
+          : effectiveRotation === 'se'
+            ? -8
+            : 0;
+      drawIsoPrism(
+        ctx,
+        sx + backShiftX,
+        sy - 4,
+        sofaW - 6,
+        Math.round(sofaH * 0.55),
+        14,
+        shadeHexColor(baseRed, 1.08),
+        baseRed,
+        darkRed,
+        '#000000'
+      );
+      // Armrests
+      drawIsoPrism(
+        ctx,
+        sx - 18,
+        sy + 4,
+        12,
+        10,
+        14,
+        baseRed,
+        darkRed,
+        deepRed,
+        '#000000'
+      );
+      drawIsoPrism(
+        ctx,
+        sx + 18,
+        sy + 4,
+        12,
+        10,
+        14,
+        baseRed,
+        darkRed,
+        deepRed,
+        '#000000'
+      );
+      break;
+    }
+
+    case 'beanbag_chair': {
+      const bagCol = obj.colorVariant || '#9333EA';
+      const bagDark = shadeHexColor(bagCol, 0.78);
+      const bagDeep = shadeHexColor(bagCol, 0.62);
+      // Plump rounded tiered beanbag
+      drawIsoPrism(ctx, sx, sy + 9, 38, 20, 8, bagCol, bagDark, bagDeep, '#000000');
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 2,
+        30,
+        15,
+        7,
+        shadeHexColor(bagCol, 1.12),
+        bagCol,
+        bagDark,
+        '#000000'
+      );
+      // Cozy inner seat dimple
+      drawIsoDiamond(ctx, sx, sy - 2, 16, 8, bagDark, '#000000', 1);
+      break;
+    }
+
+    case 'bed_blue':
+    case 'bed_green': {
+      const isBlue = obj.type === 'bed_blue';
+      const blanketMain =
+        obj.colorVariant &&
+        obj.colorVariant !== '#2563eb' &&
+        obj.colorVariant !== '#16a34a'
+          ? obj.colorVariant
+          : isBlue
+            ? '#2563EB'
+            : '#16A34A';
+      const blanketStripe = shadeHexColor(blanketMain, 1.25);
+      const blanketSide = shadeHexColor(blanketMain, 0.76);
+
+      // Under-bed storage box peeking out
+      drawIsoPrism(
+        ctx,
+        sx + 4,
+        sy + 12,
+        24,
+        12,
+        5,
+        '#64748B',
+        '#475569',
+        '#334155',
+        '#000000'
+      );
+      // Wooden bedframe base
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 8,
+        56,
+        28,
+        8,
+        '#D97706',
+        '#B45309',
+        '#78350F',
+        '#000000'
+      );
+      // Striped Mattress & Blanket
+      drawIsoPrism(
+        ctx,
+        sx + 2,
+        sy + 1,
+        50,
+        25,
+        7,
+        blanketMain,
+        blanketSide,
+        shadeHexColor(blanketMain, 0.62),
+        '#000000'
+      );
+      drawIsoDiamond(ctx, sx + 5, sy - 4, 34, 17, blanketStripe);
+      // Tall Wooden Headboard at back-right/back-left
+      const headX = effectiveRotation === 'sw' ? sx + 14 : sx - 14;
+      drawIsoPrism(
+        ctx,
+        headX,
+        sy - 6,
+        26,
+        14,
+        18,
+        '#B45309',
+        '#92400E',
+        '#78350F',
+        '#000000'
+      );
+      // Fluffy White Pillow
+      drawIsoPrism(
+        ctx,
+        headX + (effectiveRotation === 'sw' ? -4 : 4),
+        sy - 4,
+        20,
+        10,
+        5,
+        '#FFFFFF',
+        '#E2E8F0',
+        '#CBD5E1',
+        '#000000'
+      );
+      break;
+    }
+
+    case 'bookshelf': {
+      const woodTop = obj.colorVariant || '#B45309';
+      const woodLeft = shadeHexColor(woodTop, 0.82);
+      const woodRight = shadeHexColor(woodTop, 0.65);
+      // Tall wooden bookcase frame
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 6,
+        44,
+        22,
+        48,
+        woodTop,
+        woodLeft,
+        woodRight,
+        '#000000'
+      );
+      // 4 rows of colorful pixel books on the front face
+      const bookColors = ['#EF4444', '#3B82F6', '#22C55E', '#FACC15', '#A855F7'];
+      for (let row = 0; row < 4; row++) {
+        const ry = Math.round(sy - 32 + row * 10);
+        ctx.fillStyle = '#271406';
+        ctx.fillRect(Math.round(sx - 14), ry, 28, 8);
+        for (let b = 0; b < 6; b++) {
+          ctx.fillStyle = bookColors[(row + b) % bookColors.length];
+          ctx.fillRect(Math.round(sx - 13 + b * 4.5), ry + 1, 3.5, 6);
+        }
+      }
+      break;
+    }
+
+    case 'wardrobe': {
+      const wTop = obj.colorVariant || '#A16207';
+      const wLeft = shadeHexColor(wTop, 0.82);
+      const wRight = shadeHexColor(wTop, 0.66);
+      // Tall wooden wardrobe cabinet
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 6,
+        46,
+        24,
+        46,
+        wTop,
+        wLeft,
+        wRight,
+        '#000000'
+      );
+      // Open hanging closet interior recess
+      ctx.fillStyle = '#29180B';
+      ctx.fillRect(Math.round(sx - 12), Math.round(sy - 32), 24, 22);
+      // Hanging pixel shirts (blue, red, emerald)
+      ctx.fillStyle = '#38BDF8';
+      ctx.fillRect(Math.round(sx - 10), Math.round(sy - 29), 6, 15);
+      ctx.fillStyle = '#EF4444';
+      ctx.fillRect(Math.round(sx - 2), Math.round(sy - 29), 6, 16);
+      ctx.fillStyle = '#22C55E';
+      ctx.fillRect(Math.round(sx + 5), Math.round(sy - 29), 5, 14);
+      // Bottom drawers seam + white door stickers
+      ctx.strokeStyle = '#000000';
+      ctx.strokeRect(Math.round(sx - 14), Math.round(sy - 8), 28, 9);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(Math.round(sx - 16), Math.round(sy - 26), 4, 5);
+      ctx.fillRect(Math.round(sx - 15), Math.round(sy - 19), 4, 4);
+      break;
+    }
+
+    case 'crt_tv_console': {
+      // Wooden TV media cabinet
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 6,
+        50,
+        25,
+        16,
+        '#B45309',
+        '#92400E',
+        '#78350F',
+        '#000000'
+      );
+      // Dark charcoal CRT Television on top
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy - 10,
+        38,
+        19,
+        24,
+        '#475569',
+        '#334155',
+        '#1E293B',
+        '#000000'
+      );
+      // CRT Glass Screen
+      ctx.fillStyle = '#0F172A';
+      ctx.fillRect(Math.round(sx - 12), Math.round(sy - 29), 24, 16);
+      ctx.fillStyle = '#38BDF8';
+      ctx.fillRect(Math.round(sx - 10), Math.round(sy - 27), 20, 12);
+      // Retro Game Console & 2 Wired Controllers on floor in front
+      drawIsoPrism(
+        ctx,
+        sx + 10,
+        sy + 18,
+        16,
+        8,
+        5,
+        '#CBD5E1',
+        '#94A3B8',
+        '#64748B',
+        '#000000'
+      );
+      drawIsoDiamond(ctx, sx - 6, sy + 20, 10, 5, '#1E293B', '#000000', 1);
+      break;
+    }
+
+    case 'pizza_box': {
+      // Open cardboard pizza box
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 10,
+        26,
+        13,
+        4,
+        '#FEF3C7',
+        '#FDE68A',
+        '#F59E0B',
+        '#000000'
+      );
+      // Hot golden crust & pepperoni pizza inside
+      drawIsoDiamond(ctx, sx, sy + 7, 20, 10, '#F97316', '#DC2626', 1);
+      ctx.fillStyle = '#FACC15';
+      ctx.fillRect(Math.round(sx - 4), Math.round(sy + 10), 8, 4);
+      ctx.fillStyle = '#DC2626';
+      ctx.fillRect(Math.round(sx - 3), Math.round(sy + 11), 2, 2);
+      ctx.fillRect(Math.round(sx + 1), Math.round(sy + 11), 2, 2);
+      break;
+    }
+
+    case 'floor_lamp': {
+      // Round lamp base
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 10,
+        22,
+        11,
+        4,
+        '#94A3B8',
+        '#64748B',
+        '#475569',
+        '#000000'
+      );
+      // Tall slender chrome stand pole
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(Math.round(sx - 2), Math.round(sy - 34), 4, 42);
+      ctx.fillStyle = '#E2E8F0';
+      ctx.fillRect(Math.round(sx - 1), Math.round(sy - 34), 2, 42);
+      // Warm glowing lampshade
+      const shadeCol = obj.colorVariant || '#FDE68A';
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy - 30,
+        28,
+        14,
+        14,
+        '#FFFBEB',
+        shadeCol,
+        '#F59E0B',
+        '#000000'
+      );
+      break;
+    }
+
+    case 'wall_divider': {
+      const wallCol = obj.colorVariant || '#B85A46';
+      const wallLeft = shadeHexColor(wallCol, 0.88);
+      const wallRight = shadeHexColor(wallCol, 0.72);
+      const isSw = effectiveRotation === 'sw' || effectiveRotation === 'ne';
+      // Full-height isometric interior wall partition block
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy + 8,
+        isSw ? 20 : 62,
+        isSw ? 30 : 18,
+        62,
+        '#ECECEC',
+        wallLeft,
+        wallRight,
+        '#000000'
+      );
+      break;
+    }
+
+    case 'lockable_door': {
+      const isLocked = Boolean(obj.isDoorLocked);
+      const frameCol = obj.colorVariant || '#B85A46';
+      const doorWood = isLocked ? '#78350F' : '#15803D';
+      const isSw = effectiveRotation === 'sw' || effectiveRotation === 'ne';
+
+      // Doorframe pillars & top lintel
+      drawIsoPrism(
+        ctx,
+        sx - 18,
+        sy + 8,
+        12,
+        8,
+        62,
+        '#ECECEC',
+        frameCol,
+        shadeHexColor(frameCol, 0.75),
+        '#000000'
+      );
+      drawIsoPrism(
+        ctx,
+        sx + 18,
+        sy + 8,
+        12,
+        8,
+        62,
+        '#ECECEC',
+        frameCol,
+        shadeHexColor(frameCol, 0.75),
+        '#000000'
+      );
+      drawIsoPrism(
+        ctx,
+        sx,
+        sy - 42,
+        isSw ? 22 : 56,
+        16,
+        12,
+        '#ECECEC',
+        frameCol,
+        shadeHexColor(frameCol, 0.75),
+        '#000000'
+      );
+
+      if (isLocked) {
+        // Closed & Locked solid door panel blocking the passage
+        drawIsoPrism(
+          ctx,
+          sx,
+          sy + 6,
+          32,
+          14,
+          46,
+          '#92400E',
+          doorWood,
+          '#451A03',
+          '#000000'
+        );
+      } else {
+        // Swung-open door panel allowing passage
+        drawIsoPrism(
+          ctx,
+          sx - 12,
+          sy + 12,
+          12,
+          18,
+          44,
+          '#22C55E',
+          '#15803D',
+          '#166534',
+          '#000000'
+        );
+      }
+
+      // Crisp Lock / Unlock Status Badge on top of doorframe
+      ctx.fillStyle = '#000000';
+      ctx.fillRect(Math.round(sx - 18), Math.round(sy - 64), 36, 11);
+      ctx.fillStyle = isLocked ? '#DC2626' : '#16A34A';
+      ctx.fillRect(Math.round(sx - 17), Math.round(sy - 63), 34, 9);
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font = 'bold 6px "Volter", monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        isLocked ? 'LOCKED' : 'OPEN',
+        Math.round(sx),
+        Math.round(sy - 56)
+      );
+      break;
+    }
   }
 
   ctx.restore();
