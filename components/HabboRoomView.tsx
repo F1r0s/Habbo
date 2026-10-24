@@ -37,6 +37,7 @@ import {
   GridCoord,
   IsometricRotation,
   TimeOfDayTheme,
+  FloorPatternType,
   VisitorAvatarProfile,
   computeTimeOfDayTheme,
   screenToGrid,
@@ -2140,7 +2141,6 @@ export default function HabboRoomView() {
               </motion.div>
             )}
           </AnimatePresence>
-          </>
         )}
       </div>
 
@@ -2327,8 +2327,9 @@ export default function HabboRoomView() {
                 </div>
               )}
 
-              {false &&
-                isAdminAuthenticated &&
+              {isAdminAuthenticated &&
+                inspectedObject &&
+              Boolean(false) &&
                 !inspectedObject.id.startsWith('patrol-') && (
                   <div
                     data-testid="tooltip-admin-transform-sliders"
@@ -2607,7 +2608,7 @@ export default function HabboRoomView() {
                           return;
                         }
                         const canonical = `https://www.youtube.com/watch?v=${vidId}`;
-                        updateObjectVideoUrl(inspectedObject.id, canonical);
+                        updateObjectVideoUrl(inspectedObject!.id, canonical);
                         setRoomTvUrlDraft(canonical);
                         setRoomTvUrlFeedback(
                           `Broadcasting (${vidId}) to all visitors!`
